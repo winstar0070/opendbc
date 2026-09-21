@@ -174,23 +174,35 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
   # Green-fill direction: held while the lane-change animation is active OR easing
-  # Green drive-path. WHILE changing: only the TARGET side is green (dir 1=left,
-  # 2=right) -- it must NOT wrap the car, it sits to the side we're moving toward.
-  # ON LANDING (change complete): BOTH halves green so the car sits in the MIDDLE
-  # of the green corridor (the new lane) -- "car centered inside the green path".
-  # Off otherwise. Uses prior-frame disp_state.
-  _green_dir = 0
-  _green_landed = False
+  # Green BACKGROUND fill (LANE_LEFT/RIGHT = the coloured area inside the lane, not
+  # the lines). User's model: the green starts on the TARGET side and fills toward
+  # CENTER as the change progresses, so by completion the car sits in the middle
+  # of the green. LANE_* has no position, only left/right half on/off -- so we
+  # approximate "left -> center" as: target half first, then BOTH halves once the
+  # slide passes FILL_PROG (green has reached center), and both when landed.
+  FILL_PROG = 0.5   # past this the green has filled to center -> light both halves
+  _fill_left = False
+  _fill_right = False
   if disp_state is not None:
     _lc_landed = disp_state.get("lc_landed", False)
     _lc_prog = disp_state.get("lc_prog", 0.0)
     _lc_dir = disp_state.get("lc_dir", 0)
+    _changing = (_lc_prog > 0.0 or _lc_dir)
     if _lc_landed and _lc_dir:
-      _green_landed = True                       # complete: green corridor centered
-    elif not _lc_landed and (_lc_prog > 0.0 or _lc_dir):
-      _green_dir = _lc_dir                        # changing: only the target side
+      _fill_left = _fill_right = True             # complete: green centered
+    elif _changing:
+      _reached_center = _lc_prog >= FILL_PROG
+      if _lc_dir == 1:                            # left change
+        _fill_left = True
+        _fill_right = _reached_center             # fills to center in 2nd half
+      elif _lc_dir == 2:                          # right change
+        _fill_right = True
+        _fill_left = _reached_center
   elif lane_change_state in (2, 3):
-    _green_dir = lane_change_direction
+    if lane_change_direction == 1:
+      _fill_left = True
+    elif lane_change_direction == 2:
+      _fill_right = True
 
   # Lane-line COLOUR/visibility for the crossing. Normal driving = WHITE (2);
   # during a change the lines are GREEN (6). The catch: as a line slides toward
@@ -236,10 +248,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
     "LCA_RIGHT_ARROW": 2 if right_blinker else 0,
-    # Green drive-path: landed -> both halves (car centered in the corridor);
-    # changing -> only the target side (does not wrap the car).
-    "LANE_LEFT": 1 if (lfa_icon and (_green_landed or _green_dir == 1)) else 0,
-    "LANE_RIGHT": 1 if (lfa_icon and (_green_landed or _green_dir == 2)) else 0,
+    # Green background fill: target side first, then both halves as it reaches
+    # center (see _fill_left/_fill_right), so the green slides from the target
+    # side into the middle where the car sits.
+    "LANE_LEFT": 1 if (lfa_icon and _fill_left) else 0,
+    "LANE_RIGHT": 1 if (lfa_icon and _fill_right) else 0,
   })
 
   # Lane-change lane animation (car icon stays centered; the LANES move).
