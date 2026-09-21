@@ -141,6 +141,30 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["SOUNDS_4"] = 0
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
+
+  # TEMP-DEV (REVERT BEFORE VEHICLE USE): stopped-only lane-change animation test,
+  # driven BY THE BLINKER. This car has no factory auto-lane-change, so while
+  # parked we synthesize lane_change_state from the turn signal: hold the LEFT or
+  # RIGHT blinker to play that side's animation (starting -> finishing), release
+  # to end (off). Forces lfa_icon + send_161. Display (HUD) only; no control.
+  CCNC_DEV_STOPPED_LANECHANGE_TEST = True
+  if CCNC_DEV_STOPPED_LANECHANGE_TEST:
+    lfa_icon = 2
+    send_161 = True
+    _blink_dir = 1 if left_blinker else 2 if right_blinker else 0
+    if disp_state is not None and send_161:
+      _held = disp_state.get("dev_blink_frames", 0)
+      _held = _held + 1 if _blink_dir else 0
+      disp_state["dev_blink_frames"] = _held
+    else:
+      _held = 1 if _blink_dir else 0
+    if _blink_dir:
+      # first ~1.5s (30 frames @20Hz) = starting(2), then finishing(3)
+      lane_change_state = 2 if _held < 30 else 3
+      lane_change_direction = _blink_dir
+    else:
+      lane_change_state, lane_change_direction = 0, 0
+
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
