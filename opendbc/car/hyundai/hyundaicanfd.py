@@ -246,7 +246,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   eases back to the neutral ego view). Position = 15 + dir_sign * prog * 15,
     #   so prog=1 hits the edge (0 or 30) exactly.
     # LANE_POS_SIGN = -1 (on-vehicle: slide direction was inverted).
-    LANE_POS_SIGN = -1
+    LANE_POS_SIGN = 1
     PROG_STEP = 0.03         # per-0x161-frame ramp; ~33 frames (~1.7s) end to end (slower/smoother)
     changing = lane_change_state in (2, 3)
     # direction of travel: left(1) or right(2); hold last direction while easing out
@@ -293,7 +293,8 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   and the outer line goes to LANE_POS_MAX, so the whole pair rides off toward
     #   one side (the original lane exits, the target lane centers). Rest (prog=0)
     #   stays a symmetric 15/15 so straight driving looks normal.
-    # LANE_POS_SIGN = -1 (on-vehicle: slide direction was inverted).
+    # LANE_POS_SIGN = 1 (on-vehicle: correct after the inner/outer rework; the
+    # 6-bit-headroom split reversed the earlier -1 mapping).
     LANE_POS_REST = 15.0     # symmetric rest position (normal width)
     LANE_POS_INNER_END = 0.0    # inner line slides to the screen center at prog=1
     LANE_POS_OUTER_END = 60.0   # outer line rides out near the 6-bit max (<=63)
