@@ -223,7 +223,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   so prog=1 hits the edge (0 or 30) exactly.
     # LANE_POS_SIGN = -1 (on-vehicle: slide direction was inverted).
     LANE_POS_SIGN = -1
-    PROG_STEP = 0.06         # per-0x161-frame ramp; ~17 frames (~0.85s) end to end
+    PROG_STEP = 0.03         # per-0x161-frame ramp; ~33 frames (~1.7s) end to end (slower/smoother)
     changing = lane_change_state in (2, 3)
     # direction of travel: left(1) or right(2); hold last direction while easing out
     if changing and lane_change_direction in (1, 2):
