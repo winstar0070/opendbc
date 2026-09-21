@@ -203,7 +203,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # the cluster maps position the opposite way (confirm on-vehicle).
   # LANELINE_LEFT_POSITION is 6-bit (0..63); we keep left+right centered on 30.
   if lfa_icon:
-    LANE_CHANGE_BIAS = 12.0  # how far the lanes lean by the end of the change
+    LANE_CHANGE_BIAS = 15.0  # full lean: target reaches the edge (0/30) so green centers
     LANE_POS_SIGN = -1       # on-vehicle: slide direction was inverted, so -1
     changing = lane_change_state in (2, 3)
     if changing and lane_change_direction == 1:      # left -> push lanes right
@@ -217,13 +217,14 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       # Advance the low-pass only on a real 0x161 update; create_ccnc is also
       # called on 0x162-only updates and would otherwise double-step.
       if send_161:
-        LANE_POS_ALPHA = 0.20  # 0..1, smaller = smoother/slower slide
+        LANE_POS_ALPHA = 0.22  # 0..1, smaller = smoother/slower slide
         lp = disp_state.get("left_pos", 15.0)
         prev_changing = disp_state.get("prev_changing", False)
         if prev_changing and not changing:
           lp = 15.0  # change ended: green lane becomes the new ego lane
         else:
           lp += (left_target - lp) * LANE_POS_ALPHA
+        lp = min(30.0, max(0.0, lp))
         disp_state["prev_changing"] = changing
         disp_state["left_pos"] = lp
       else:
