@@ -140,6 +140,10 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["SOUNDS_4"] = 0
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
+  # TEMP-DEV (REVERT BEFORE VEHICLE USE): 정차 중에도 차선 변경 HUD 애니메이션을 검증하기 위한 임시 속도 게이트 우회.
+  # 표시(HUD) 전용이며 조향/차선변경 제어와 무관. 검증 후 이 커밋을 revert 할 것. (ccnc-lane-change-smonth dev-only)
+  CCNC_DEV_FORCE_LANE_CHANGE = True
+  lane_change_speed_min = 0.0 if CCNC_DEV_FORCE_LANE_CHANGE else LANE_CHANGE_SPEED_MIN
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
@@ -151,8 +155,8 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LANELINE_CURVATURE": curvature[max(-15, min(int(out.steeringAngleDeg / 4.5), 15))] if lfa_icon and not any_blinker else 15,
     "LANELINE_LEFT": (0 if not lfa_icon else 1 if not hud.leftLaneVisible else 4 if hud.leftLaneDepart else 6 if any_blinker else 2),
     "LANELINE_RIGHT": (0 if not lfa_icon else 1 if not hud.rightLaneVisible else 4 if hud.rightLaneDepart else 6 if any_blinker else 2),
-    "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.leftBlindspot else 2 if any_blinker else 4),
-    "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
+    "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < lane_change_speed_min else 1 if out.leftBlindspot else 2 if any_blinker else 4),
+    "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < lane_change_speed_min else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
     "LCA_RIGHT_ARROW": 2 if right_blinker else 0,
   })
