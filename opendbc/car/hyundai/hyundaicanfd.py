@@ -165,25 +165,35 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     left_lane_raw, right_lane_raw = msg_1b5["Info_LftLnPosVal"], msg_1b5["Info_RtLnPosVal"]
 
     scale_per_m = 15 / 1.7
-    left_lane = abs(int(round(15 + (left_lane_raw - 1.7) * scale_per_m)))
-    right_lane = abs(int(round(15 + (right_lane_raw - 1.7) * scale_per_m)))
+    EPS = 1e-3
 
-    if msg_1b5["Info_LftLnQualSta"] not in (2, 3):
-      left_lane = 0
-    if msg_1b5["Info_RtLnQualSta"] not in (2, 3):
-      right_lane = 0
+    def to_pos(raw):
+      return abs(int(round(15 + (raw - 1.7) * scale_per_m)))
 
-    if left_lane_raw == -2.0248375:
-      left_lane = 30 - right_lane
-    if right_lane_raw == 2.0248375:
-      right_lane = 30 - left_lane
+    def isclose(a, b):
+      return abs(a - b) < EPS
 
-    if left_lane_raw == right_lane_raw == 0:
+    # A: 순서 의존 제거 — 모든 판정을 raw 원본 기준으로 하고, 특례/raw==0 보정 시
+    # 참조하는 반대쪽 값은 '한쪽 보정 이전의 base 값'으로 고정한다.
+    # (기존에는 왼쪽 보정 결과를 오른쪽 계산이 다시 사용해 좌우가 뒤바뀌는 문제가 있었음)
+    left_base = 0 if msg_1b5["Info_LftLnQualSta"] not in (2, 3) else to_pos(left_lane_raw)
+    right_base = 0 if msg_1b5["Info_RtLnQualSta"] not in (2, 3) else to_pos(right_lane_raw)
+
+    left_lane, right_lane = left_base, right_base
+
+    # 특례값 처리 (양쪽이 서로의 base 값을 사용 — 순서 무관)
+    if isclose(left_lane_raw, -2.0248375):
+      left_lane = 30 - right_base
+    if isclose(right_lane_raw, 2.0248375):
+      right_lane = 30 - left_base
+
+    # raw==0 처리 (base 스냅샷 기준, 순서 무관)
+    if isclose(left_lane_raw, 0) and isclose(right_lane_raw, 0):
       left_lane = right_lane = 15
-    elif left_lane_raw == 0:
-      left_lane = 30 - right_lane
-    elif right_lane_raw == 0:
-      right_lane = 30 - left_lane
+    elif isclose(left_lane_raw, 0):
+      left_lane = 30 - right_base
+    elif isclose(right_lane_raw, 0):
+      right_lane = 30 - left_base
 
     total = left_lane + right_lane
     if total == 0:
