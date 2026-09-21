@@ -155,7 +155,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # EXPERIMENT: sweep one unknown field's values to discover its effect on the
   # cluster (does it move the ego car into the target lane?). One field at a time.
   CCNC_DEV_FIELD_SWEEP = True
-  CCNC_DEV_SWEEP_FIELD = "LANE_ZOOM"   # LANE_ZOOM | CAR_CIRCLE | CENTERLINE | LANE_HIGHLIGHT
+  CCNC_DEV_SWEEP_FIELD = "CAR_CIRCLE"  # tried: LANE_ZOOM(no effect). next: CENTERLINE | LANE_HIGHLIGHT
   _sweep_field = None   # field-sweep experiment state (set inside the dev gate)
   _sweep_val = 0
   if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
