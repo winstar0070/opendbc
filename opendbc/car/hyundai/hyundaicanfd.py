@@ -156,6 +156,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
     "LCA_RIGHT_ARROW": 2 if right_blinker else 0,
+    # Fill the target lane area green while a lane change is in progress, mirroring
+    # the stock cluster (see carrotpilot). laneChangeState: 2=starting, 3=finishing;
+    # direction: 1=left, 2=right. Returns to 0 (centered) when the change ends.
+    "LANE_LEFT": 1 if (lfa_icon and lane_change_state in (2, 3) and lane_change_direction == 1) else 0,
+    "LANE_RIGHT": 1 if (lfa_icon and lane_change_state in (2, 3) and lane_change_direction == 2) else 0,
   })
 
   if lfa_icon and any_blinker:
