@@ -209,21 +209,31 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     # Advance ONLY when send_161 is True: create_ccnc is also called on 0x162-only
     # updates, and advancing the 0x161 display state there would double-step it.
     # Curvature is intentionally NOT smoothed here (its lookup is non-monotonic).
+    # B + lane-change animation: instead of chasing the raw camera position
+    # (which jumps when the camera swaps left/right references at the crossing),
+    # SCRIPT the target from the lane-change progress so the display slides toward
+    # the target lane and then re-centers as that lane becomes the ego lane:
+    #   off(0)/preLaneChange(1): center (15)
+    #   laneChangeStarting(2):   bias toward the target lane (left -> smaller,
+    #                            right -> larger left_pos) so the car appears to
+    #                            move into the green target lane
+    #   laneChangeFinishing(3):  converge back to center (15) = the target lane
+    #                            has become the ego lane
+    # A low-pass makes the whole slide-and-recenter smooth. Direction: 1=left, 2=right.
+    LANE_CHANGE_BIAS = 9.0  # how far the display leans toward the target lane
+    if lane_change_state == 2 and lane_change_direction == 1:
+      left_target = 15.0 - LANE_CHANGE_BIAS
+    elif lane_change_state == 2 and lane_change_direction == 2:
+      left_target = 15.0 + LANE_CHANGE_BIAS
+    elif lane_change_state in (1, 3) or lane_change_state == 0:
+      left_target = 15.0
+
     if disp_state is not None and send_161:
       LANE_POS_ALPHA = 0.35  # 0..1, smaller = smoother/slower
       lp = disp_state.get("left_pos")
       if lp is None:
         lp = left_target
-      # Lane-crossing snap: at the laneChangeStarting(2) -> laneChangeFinishing(3)
-      # transition the camera swaps its left/right lane references, so the target
-      # jumps for a NON-physical reason. Interpolating through it would sweep the
-      # lane the wrong way across the screen, so snap instead of smoothing.
-      prev_lcs = disp_state.get("prev_lane_change_state", 0)
-      if prev_lcs == 2 and lane_change_state == 3:
-        lp = left_target
-      else:
-        lp += (left_target - lp) * LANE_POS_ALPHA
-      disp_state["prev_lane_change_state"] = lane_change_state
+      lp += (left_target - lp) * LANE_POS_ALPHA
       disp_state["left_pos"] = lp
       left_lane = int(round(lp))
       right_lane = 30 - left_lane
