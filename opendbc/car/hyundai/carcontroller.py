@@ -74,6 +74,10 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.last_button_frame = 0
     self.cancel_counter = 0
     self.ccnc_disp = {}  # B: display-only smoothing state for ccNC lane position
+    # ccNC HUD: lane-change state/direction injected by card.py from modelV2.meta.
+    # 0=off,1=preLaneChange,2=laneChangeStarting,3=laneChangeFinishing (log.LaneChangeState).
+    self.lane_change_state = 0
+    self.lane_change_direction = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
     EsccCarController.update(self, CS)
@@ -218,7 +222,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CC.leftBlinker,
                                                   CC.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
-                                                  disp_state=self.ccnc_disp))
+                                                  disp_state=self.ccnc_disp, lane_change_state=self.lane_change_state,
+                                                  lane_change_direction=self.lane_change_direction))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

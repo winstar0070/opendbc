@@ -127,7 +127,8 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
-                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, disp_state=None):
+                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, disp_state=None,
+                lane_change_state=0, lane_change_direction=0):
   for f in {"FAULT_LSS", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW", "FAULT_ESS"}:
     msg_162[f] = 0
   if msg_161["ALERTS_2"] == 5:
