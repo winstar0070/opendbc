@@ -208,7 +208,16 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       lp = disp_state.get("left_pos")
       if lp is None:
         lp = left_target
-      lp += (left_target - lp) * LANE_POS_ALPHA
+      # Lane-crossing snap: at the laneChangeStarting(2) -> laneChangeFinishing(3)
+      # transition the camera swaps its left/right lane references, so the target
+      # jumps for a NON-physical reason. Interpolating through it would sweep the
+      # lane the wrong way across the screen, so snap instead of smoothing.
+      prev_lcs = disp_state.get("prev_lane_change_state", 0)
+      if prev_lcs == 2 and lane_change_state == 3:
+        lp = left_target
+      else:
+        lp += (left_target - lp) * LANE_POS_ALPHA
+      disp_state["prev_lane_change_state"] = lane_change_state
       disp_state["left_pos"] = lp
       left_lane = int(round(lp))
       right_lane = 30 - left_lane
