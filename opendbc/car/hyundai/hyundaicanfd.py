@@ -127,7 +127,7 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
-                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True):
+                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, disp_state=None):
   for f in {"FAULT_LSS", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW", "FAULT_ESS"}:
     msg_162[f] = 0
   if msg_161["ALERTS_2"] == 5:
@@ -216,9 +216,26 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
 
     total = left_lane + right_lane
     if total == 0:
-      left_lane = right_lane = 15
+      left_target = 15.0
     else:
-      left_lane = round((left_lane / total) * 30)
+      left_target = (left_lane / total) * 30.0
+
+    # B: display-only position smoothing. Keep a float display position in
+    # disp_state and low-pass toward the target, integerizing only at send time.
+    # Advance ONLY when send_161 is True: create_ccnc is also called on 0x162-only
+    # updates, and advancing the 0x161 display state there would double-step it.
+    # Curvature is intentionally NOT smoothed here (its lookup is non-monotonic).
+    if disp_state is not None and send_161:
+      LANE_POS_ALPHA = 0.35  # 0..1, smaller = smoother/slower
+      lp = disp_state.get("left_pos")
+      if lp is None:
+        lp = left_target
+      lp += (left_target - lp) * LANE_POS_ALPHA
+      disp_state["left_pos"] = lp
+      left_lane = int(round(lp))
+      right_lane = 30 - left_lane
+    else:
+      left_lane = int(round(left_target))
       right_lane = 30 - left_lane
 
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
