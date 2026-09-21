@@ -163,69 +163,17 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LANE_RIGHT": 1 if (lfa_icon and lane_change_state in (2, 3) and lane_change_direction == 2) else 0,
   })
 
-  if lfa_icon and any_blinker:
-    left_lane_raw, right_lane_raw = msg_1b5["Info_LftLnPosVal"], msg_1b5["Info_RtLnPosVal"]
-
-    scale_per_m = 15 / 1.7
-    EPS = 1e-3
-
-    def to_pos(raw):
-      return abs(int(round(15 + (raw - 1.7) * scale_per_m)))
-
-    def isclose(a, b):
-      return abs(a - b) < EPS
-
-    # A: remove order dependence. Judge everything from the raw inputs, and when
-    # applying the special-value / raw==0 corrections reference the opposite side
-    # from a pre-correction "base" snapshot (previously the corrected left value was
-    # reused by the right calculation, which swapped left/right when both were special).
-    left_base = 0 if msg_1b5["Info_LftLnQualSta"] not in (2, 3) else to_pos(left_lane_raw)
-    right_base = 0 if msg_1b5["Info_RtLnQualSta"] not in (2, 3) else to_pos(right_lane_raw)
-
-    left_lane, right_lane = left_base, right_base
-
-    # Special-value handling (each side uses the other's base value -> order-independent).
-    if isclose(left_lane_raw, -2.0248375):
-      left_lane = 30 - right_base
-    if isclose(right_lane_raw, 2.0248375):
-      right_lane = 30 - left_base
-
-    # raw==0 handling (against the base snapshot -> order-independent).
-    if isclose(left_lane_raw, 0) and isclose(right_lane_raw, 0):
-      left_lane = right_lane = 15
-    elif isclose(left_lane_raw, 0):
-      left_lane = 30 - right_base
-    elif isclose(right_lane_raw, 0):
-      right_lane = 30 - left_base
-
-    total = left_lane + right_lane
-    if total == 0:
-      left_target = 15.0
-    else:
-      left_target = (left_lane / total) * 30.0
-
-    # B: display-only position smoothing. Keep a float display position in
-    # disp_state and low-pass toward the target, integerizing only at send time.
-    # Advance ONLY when send_161 is True: create_ccnc is also called on 0x162-only
-    # updates, and advancing the 0x161 display state there would double-step it.
-    # Curvature is intentionally NOT smoothed here (its lookup is non-monotonic).
-    # B + lane-change animation: instead of chasing the raw camera position
-    # (which jumps when the camera swaps left/right references at the crossing),
-    # SCRIPT the target from the lane-change progress so the display slides toward
-    # the target lane and then re-centers as that lane becomes the ego lane:
-    #   off(0)/preLaneChange(1): center (15)
-    #   laneChangeStarting(2):   bias toward the target lane (left -> smaller,
-    #                            right -> larger left_pos) so the car appears to
-    # Target animation (car icon stays centered; the LANES move):
-    #   left change:  existing lanes slide RIGHT, green fills the LEFT lane;
-    #   right change: existing lanes slide LEFT,  green fills the RIGHT lane.
-    # Keep pushing the lanes in one direction for the WHOLE change
-    # (starting(2) AND finishing(3)) so the green target lane travels all the way
-    # to center; when the change ends (off), reset so the green lane reads as the
-    # new ego lane (centered). Do NOT re-center during finishing -- that would pull
-    # the lanes back before the green reaches the middle.
-    # LANE_POS_SIGN flips the on-screen direction if the cluster maps position the
-    # opposite way (set from on-vehicle observation).
+  # Lane-change lane animation (car icon stays centered; the LANES move).
+  # Driven purely by the plumbed lane-change state -- this car has no factory
+  # auto-lane-change, so there is no stock source geometry to follow.
+  #   left change:  push lanes RIGHT, green fills the LEFT lane.
+  #   right change: push lanes LEFT,  green fills the RIGHT lane.
+  # Keep pushing for the WHOLE change (starting(2) AND finishing(3)) so the green
+  # target lane reaches center; on the change ending (off) snap-reset so the green
+  # lane reads as the new ego lane. LANE_POS_SIGN flips the on-screen direction if
+  # the cluster maps position the opposite way (confirm on-vehicle).
+  # LANELINE_LEFT_POSITION is 6-bit (0..63); we keep left+right centered on 30.
+  if lfa_icon:
     LANE_CHANGE_BIAS = 12.0  # how far the lanes lean by the end of the change
     LANE_POS_SIGN = 1        # flip to -1 if the slide goes the wrong way on the cluster
     changing = lane_change_state in (2, 3)
@@ -236,29 +184,28 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     else:                                            # pre / off -> centered
       left_target = 15.0
 
-    if disp_state is not None and send_161:
-      LANE_POS_ALPHA = 0.20  # 0..1, smaller = smoother/slower slide
-      lp = disp_state.get("left_pos")
-      if lp is None:
-        lp = 15.0
-      # On the change ENDING (was changing, now off), snap-reset to center so the
-      # green lane becomes the new ego lane instead of sliding back.
-      prev_changing = disp_state.get("prev_changing", False)
-      if prev_changing and not changing:
-        lp = 15.0
+    if disp_state is not None:
+      # Advance the low-pass only on a real 0x161 update; create_ccnc is also
+      # called on 0x162-only updates and would otherwise double-step.
+      if send_161:
+        LANE_POS_ALPHA = 0.20  # 0..1, smaller = smoother/slower slide
+        lp = disp_state.get("left_pos", 15.0)
+        prev_changing = disp_state.get("prev_changing", False)
+        if prev_changing and not changing:
+          lp = 15.0  # change ended: green lane becomes the new ego lane
+        else:
+          lp += (left_target - lp) * LANE_POS_ALPHA
+        disp_state["prev_changing"] = changing
+        disp_state["left_pos"] = lp
       else:
-        lp += (left_target - lp) * LANE_POS_ALPHA
-      disp_state["prev_changing"] = changing
-      disp_state["left_pos"] = lp
-      left_lane = int(round(lp))
-      right_lane = 30 - left_lane
+        lp = disp_state.get("left_pos", 15.0)
     else:
-      left_lane = int(round(left_target))
-      right_lane = 30 - left_lane
+      lp = left_target
 
+    left_lane = int(round(lp))
+    right_lane = 30 - left_lane
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
-
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
 
