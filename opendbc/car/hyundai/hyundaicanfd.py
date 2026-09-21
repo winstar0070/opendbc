@@ -158,16 +158,17 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     _cnt = int(msg_161["COUNTER"])
     _stage = (_cnt // 40) % 8   # 8 stages, ~2s each at ~20Hz
     # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
-    if _stage == 1:
-      lane_change_state, lane_change_direction = 2, 1
-    elif _stage == 2:
-      lane_change_state, lane_change_direction = 3, 1
-    elif _stage == 5:
-      lane_change_state, lane_change_direction = 2, 2
-    elif _stage == 6:
-      lane_change_state, lane_change_direction = 3, 2
+    if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
+      lane_change_state = 2 if _stage == 1 else 3
+      lane_change_direction = 1
+      left_blinker, right_blinker = True, False   # show left arrow
+    elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
+      lane_change_state = 2 if _stage == 5 else 3
+      lane_change_direction = 2
+      left_blinker, right_blinker = False, True   # show right arrow
     else:
       lane_change_state, lane_change_direction = 0, 0
+      left_blinker, right_blinker = False, False
 
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
@@ -203,7 +204,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # LANELINE_LEFT_POSITION is 6-bit (0..63); we keep left+right centered on 30.
   if lfa_icon:
     LANE_CHANGE_BIAS = 12.0  # how far the lanes lean by the end of the change
-    LANE_POS_SIGN = 1        # flip to -1 if the slide goes the wrong way on the cluster
+    LANE_POS_SIGN = -1       # on-vehicle: slide direction was inverted, so -1
     changing = lane_change_state in (2, 3)
     if changing and lane_change_direction == 1:      # left -> push lanes right
       left_target = 15.0 + LANE_POS_SIGN * LANE_CHANGE_BIAS
