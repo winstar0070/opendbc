@@ -177,9 +177,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # back (disp_state), else the current lane_change_direction. Keeps green lit
   # through the ease-out.
   _green_dir = 0
-  if disp_state is not None and (disp_state.get("lc_prog", 0.0) > 0.0 or disp_state.get("lc_dir", 0)):
+  if disp_state is not None and not disp_state.get("lc_landed", False) \
+     and (disp_state.get("lc_prog", 0.0) > 0.0 or disp_state.get("lc_dir", 0)):
+    # green only while crossing; once landed the lane solidifies (green off)
     _green_dir = disp_state.get("lc_dir", 0)
-  elif lane_change_state in (2, 3):
+  elif disp_state is None and lane_change_state in (2, 3):
     _green_dir = lane_change_direction
 
   msg_161.update({
@@ -233,30 +235,44 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       if send_161:
         prog = disp_state.get("lc_prog", 0.0)
         held_dir = disp_state.get("lc_dir", 0)
-        if changing:
+        landed = disp_state.get("lc_landed", False)
+        if changing and not landed:
           held_dir = cur_dir
-          prog = min(1.0, prog + PROG_STEP)      # ramp up to full slide
-        else:
-          prog = max(0.0, prog - PROG_STEP)      # ease back to center
-          if prog == 0.0:
-            held_dir = 0
+          prog = min(1.0, prog + PROG_STEP)      # slide toward the target lane
+          if prog >= 1.0:
+            # reached the target lane -> LAND: the green lane becomes the ego lane.
+            # Solidify (green off) and treat this spot as the new center; do NOT
+            # glide back, which would look like returning instead of crossing.
+            landed = True
+        if not changing:
+          # change ended -> settled on the new lane; clear for the next change.
+          prog = 0.0
+          held_dir = 0
+          landed = False
         disp_state["lc_prog"] = prog
         disp_state["lc_dir"] = held_dir
+        disp_state["lc_landed"] = landed
       else:
         prog = disp_state.get("lc_prog", 0.0)
         held_dir = disp_state.get("lc_dir", 0)
+        landed = disp_state.get("lc_landed", False)
     else:
       prog = 1.0 if changing else 0.0
       held_dir = cur_dir
+      landed = False
 
     # held_dir: 1=left pushes lanes right(+), 2=right pushes lanes left(-)
-    # Sum-of-30 scale (center 15, edges 0/30): left+right stays 30 so raising one
-    # side lowers the other -> the lane pair SHIFTS to one side (the slide effect),
-    # rather than just widening. (Sum-of-60 only widened the lane spacing.)
+    # Sum-of-30 scale (center 15, edges 0/30): left+right=30 so the lane pair
+    # SHIFTS to one side (the crossing), rather than widening. Once LANDED, snap
+    # to center (15/15): the crossed-into lane is now the ego lane (solid), not a
+    # lane we glide back from.
     LANE_POS_CENTER = 15.0
     LANE_POS_SPAN = 15.0   # prog=1 reaches 0 or 30
-    dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
-    lp = LANE_POS_CENTER + LANE_POS_SIGN * dir_sign * prog * LANE_POS_SPAN
+    if landed:
+      lp = 15.0
+    else:
+      dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
+      lp = LANE_POS_CENTER + LANE_POS_SIGN * dir_sign * prog * LANE_POS_SPAN
     lp = min(30.0, max(0.0, lp))
     left_lane = int(round(lp))
     right_lane = 30 - left_lane
