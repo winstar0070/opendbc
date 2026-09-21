@@ -148,17 +148,6 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     # Dev-only HUD force: MADS/openpilot not engaged (lfa_icon=0) still gates the
     # animation off, so force lfa_icon active (2) to pass it. Display only; no control effect.
     lfa_icon = 2
-    # Dev-only synthetic source: while stopped the stock camera reports no lane
-    # geometry (positions/quality all 0), so inject a time-varying lane position
-    # (driven by the stock 0x161 COUNTER) and force a blinker + good quality so the
-    # lane-change animation actually renders for verification. Display only.
-    left_blinker = True
-    _cnt = int(msg_161["COUNTER"])
-    _phase = float(np.sin(_cnt * 0.15))           # -1..1 slow oscillation
-    msg_1b5["Info_LftLnPosVal"] = 1.7 + _phase * 1.5
-    msg_1b5["Info_RtLnPosVal"] = 1.7 - _phase * 1.5
-    msg_1b5["Info_LftLnQualSta"] = 3
-    msg_1b5["Info_RtLnQualSta"] = 3
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
