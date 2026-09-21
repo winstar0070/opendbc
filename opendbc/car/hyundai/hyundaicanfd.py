@@ -159,10 +159,6 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_1b5["Info_RtLnPosVal"] = 1.7 - _phase * 1.5
     msg_1b5["Info_LftLnQualSta"] = 3
     msg_1b5["Info_RtLnQualSta"] = 3
-    # Force 0x161 emission: the animation fields live in msg_161, which is only
-    # sent when send_161 is True (= stock 0x161 updated). While stopped the stock
-    # 0x161 may not update, so force it on for the test.
-    send_161 = True
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
