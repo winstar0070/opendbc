@@ -143,25 +143,26 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
 
   # TEMP-DEV (REVERT BEFORE VEHICLE USE): stopped-only lane-change animation test,
-  # driven BY THE BLINKER. This car has no factory auto-lane-change, so while
-  # parked we synthesize lane_change_state from the turn signal: hold the LEFT or
-  # RIGHT blinker to play that side's animation (starting -> finishing), release
-  # to end (off). Forces lfa_icon + send_161. Display (HUD) only; no control.
+  # AUTOMATIC (no blinker needed). This car has no factory auto-lane-change, so
+  # while parked we synthesize lane_change_state on a timer and auto-cycle:
+  #   off -> LEFT(starting,finishing) -> off -> RIGHT(starting,finishing) -> off
+  # driven by the stock 0x161 COUNTER. Forces lfa_icon + send_161.
+  # Display (HUD) only; no steering/control effect. REVERT before vehicle use.
   CCNC_DEV_STOPPED_LANECHANGE_TEST = True
   if CCNC_DEV_STOPPED_LANECHANGE_TEST:
     lfa_icon = 2
     send_161 = True
-    _blink_dir = 1 if left_blinker else 2 if right_blinker else 0
-    if disp_state is not None and send_161:
-      _held = disp_state.get("dev_blink_frames", 0)
-      _held = _held + 1 if _blink_dir else 0
-      disp_state["dev_blink_frames"] = _held
-    else:
-      _held = 1 if _blink_dir else 0
-    if _blink_dir:
-      # first ~1.5s (30 frames @20Hz) = starting(2), then finishing(3)
-      lane_change_state = 2 if _held < 30 else 3
-      lane_change_direction = _blink_dir
+    _cnt = int(msg_161["COUNTER"])
+    _stage = (_cnt // 40) % 8   # 8 stages, ~2s each at ~20Hz
+    # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
+    if _stage == 1:
+      lane_change_state, lane_change_direction = 2, 1
+    elif _stage == 2:
+      lane_change_state, lane_change_direction = 3, 1
+    elif _stage == 5:
+      lane_change_state, lane_change_direction = 2, 2
+    elif _stage == 6:
+      lane_change_state, lane_change_direction = 3, 2
     else:
       lane_change_state, lane_change_direction = 0, 0
 
