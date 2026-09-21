@@ -156,7 +156,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     lfa_icon = 2
     send_161 = True
     _cnt = int(msg_161["COUNTER"])
-    _stage = (_cnt // 40) % 8   # 8 stages, ~2s each at ~20Hz
+    _stage = (_cnt // 100) % 8   # 8 stages, ~5s each at ~20Hz (room for a slow slide)
     # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
     if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
       lane_change_state = 2 if _stage == 1 else 3
@@ -272,7 +272,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   then ramps DOWN to 0 after the change ends (the green lane, now centered,
     #   eases back to the neutral ego view). Position = 15 + dir_sign * prog * 15,
     #   so prog=1 hits the edge (0 or 30) exactly.
-    PROG_STEP = 0.03         # per-0x161-frame ramp; ~33 frames (~1.7s) end to end (slower/smoother)
+    PROG_STEP = 0.012        # per-0x161-frame ramp; ~84 frames (~4.2s) end to end (slow, gentle)
     changing = lane_change_state in (2, 3)
     # direction of travel: left(1) or right(2); hold last direction while easing out
     if changing and lane_change_direction in (1, 2):
