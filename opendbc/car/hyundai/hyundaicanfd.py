@@ -184,22 +184,30 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   elif disp_state is None and lane_change_state in (2, 3):
     _green_dir = lane_change_direction
 
-  # Lane-line COLOUR for the just-crossed-into lane. Normal driving = WHITE (2);
-  # while a change is IN PROGRESS the lines are GREEN (6). After LANDING (crossed
-  # lane is now the ego lane) blink the lines WHITE<->GREEN on a ~1s cadence as a
-  # "transition complete" cue -- this must WIN over the blinker's green-hold, since
-  # the blinker is usually still on right after landing. 0x161 runs ~20 Hz, so
-  # (COUNTER // 20) % 2 toggles about once per second.
+  # Lane-line COLOUR/visibility for the crossing. Normal driving = WHITE (2);
+  # during a change the lines are GREEN (6). The catch: as a line slides toward
+  # the car center it would sit UNDER the car icon -- so once the slide is far
+  # enough (prog past a threshold) we HIDE the inner line (1) and let the green
+  # fill wrap the car instead, so no line ever crosses under it. After LANDING the
+  # crossed-into lane is the ego lane: blink WHITE<->GREEN ~1s (wins over the
+  # blinker's green-hold, still usually on). 0x161 ~20 Hz -> (COUNTER//20)%2.
   _landed_now = disp_state is not None and disp_state.get("lc_landed", False)
   _blink_phase_green = (int(msg_161["COUNTER"]) // 20) % 2 == 0
-  # Line colour: hidden if not visible, orange on depart; after landing the
-  # blink decides white/green; while still crossing it's solid green; else white.
+  # prior-frame progress/direction (this block runs before the scale block updates
+  # them), used to decide when the sliding inner line should vanish under the car.
+  _prev_prog = disp_state.get("lc_prog", 0.0) if disp_state is not None else 0.0
+  _prev_dir = disp_state.get("lc_dir", 0) if disp_state is not None else 0
+  HIDE_PROG = 0.6   # past this slide fraction the inner line would hit the car -> hide it
+  # inner line = the one sliding toward center: left line on a left change (dir 1),
+  # right line on a right change (dir 2).
+  _hide_left = (_prev_dir == 1 and _prev_prog >= HIDE_PROG and not _landed_now)
+  _hide_right = (_prev_dir == 2 and _prev_prog >= HIDE_PROG and not _landed_now)
 
-  def _laneline_color(visible, depart):
+  def _laneline_color(visible, depart, hidden):
     if not lfa_icon:
       return 0
-    if not visible:
-      return 1
+    if hidden or not visible:
+      return 1                                 # HIDDEN (line would cross the car)
     if depart:
       return 4
     if _landed_now:
@@ -214,8 +222,8 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LFA_ICON": 2 if lfa_icon else 0,
     "CENTERLINE": 1 if lfa_icon else 0,
     "LANELINE_CURVATURE": curvature[max(-15, min(int(out.steeringAngleDeg / 4.5), 15))] if lfa_icon and not any_blinker else 15,
-    "LANELINE_LEFT": _laneline_color(hud.leftLaneVisible, hud.leftLaneDepart),
-    "LANELINE_RIGHT": _laneline_color(hud.rightLaneVisible, hud.rightLaneDepart),
+    "LANELINE_LEFT": _laneline_color(hud.leftLaneVisible, hud.leftLaneDepart, _hide_left),
+    "LANELINE_RIGHT": _laneline_color(hud.rightLaneVisible, hud.rightLaneDepart, _hide_right),
     "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.leftBlindspot else 2 if any_blinker else 4),
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
@@ -245,8 +253,6 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   then ramps DOWN to 0 after the change ends (the green lane, now centered,
     #   eases back to the neutral ego view). Position = 15 + dir_sign * prog * 15,
     #   so prog=1 hits the edge (0 or 30) exactly.
-    # LANE_POS_SIGN = -1 (on-vehicle: slide direction was inverted).
-    LANE_POS_SIGN = 1
     PROG_STEP = 0.03         # per-0x161-frame ramp; ~33 frames (~1.7s) end to end (slower/smoother)
     changing = lane_change_state in (2, 3)
     # direction of travel: left(1) or right(2); hold last direction while easing out
@@ -286,36 +292,32 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       landed = False
 
     # held_dir: 1=left change (target lane is on the LEFT), 2=right change.
-    # Rest pose = 15/15 (normal lane width, centered). During a change we use the
-    # 6-bit headroom (0..63) so the ORIGINAL ego lane slides fully off-screen and
-    # the target (green) lane reaches center -- a real crossing, not just a nudge.
-    #   The lanes are NOT summed on a constant: at prog=1 the inner line goes to 0
-    #   and the outer line goes to LANE_POS_MAX, so the whole pair rides off toward
-    #   one side (the original lane exits, the target lane centers). Rest (prog=0)
-    #   stays a symmetric 15/15 so straight driving looks normal.
-    # LANE_POS_SIGN = 1 (on-vehicle: correct after the inner/outer rework; the
-    # 6-bit-headroom split reversed the earlier -1 mapping).
-    LANE_POS_REST = 15.0     # symmetric rest position (normal width)
-    LANE_POS_INNER_END = 0.0    # inner line slides to the screen center at prog=1
-    LANE_POS_OUTER_END = 60.0   # outer line rides out near the 6-bit max (<=63)
+    # Rest pose = 15/15. During a change we SHIFT the lane pair to one side while
+    # keeping the sum on 30 (constant width) -- an asymmetric slide, not a spread:
+    # one line moves toward center, the other away by the same amount, so the pair
+    # rides sideways (the crossing) without the lanes widening or leaving the
+    # screen. BIAS caps how far it shifts so the inner line never reaches the car
+    # center (0) and the outer line never rides off-screen (30) -- both of those
+    # extremes left the car with no lane around it on-vehicle.
+    # On LANDING we return to 15/15: the crossed-into lane is now the ego lane and
+    # must wrap the car at normal width (holding the shifted pose left the car with
+    # one line under it and the other off-screen). Green->white blink marks it.
+    # LANE_POS_SIGN sets which screen side a left/right change shifts toward
+    # (re-verify with a frame sim whenever this mapping changes).
+    LANE_POS_CENTER = 15.0
+    LANE_POS_BIAS = 12.0     # max shift; inner->3, outer->27 at full push
+    LANE_POS_SIGN = -1       # verified by frame sim: left change -> lanes slide left
     if landed:
-      # Landed: the crossed-into (green) lane is now the ego lane. Hold the pushed
-      # pose (do NOT snap back to 15/15, which reads as returning). Green turns off
-      # via _green_dir so the new lane solidifies in place.
-      _p = 1.0
+      # crossed-into lane becomes the ego lane: normal-width pair around the car.
+      left_lane = 15
+      right_lane = 15
     else:
-      _p = prog
-    dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
-    # inner/outer targets ramp from the 15/15 rest pose out to the crossing pose.
-    _inner = LANE_POS_REST + _p * (LANE_POS_INNER_END - LANE_POS_REST)   # 15 -> 0
-    _outer = LANE_POS_REST + _p * (LANE_POS_OUTER_END - LANE_POS_REST)   # 15 -> 60
-    if LANE_POS_SIGN * dir_sign >= 0:
-      # left line is the inner (screen-center) line, right line rides out
-      left_lane = int(round(min(63.0, max(0.0, _inner))))
-      right_lane = int(round(min(63.0, max(0.0, _outer))))
-    else:
-      left_lane = int(round(min(63.0, max(0.0, _outer))))
-      right_lane = int(round(min(63.0, max(0.0, _inner))))
+      dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
+      shift = LANE_POS_SIGN * dir_sign * prog * LANE_POS_BIAS
+      # left line moves by +shift, right by -shift: sum stays 30 (width constant),
+      # the pair slides toward one side.
+      left_lane = int(round(min(30.0, max(0.0, LANE_POS_CENTER + shift))))
+      right_lane = int(round(min(30.0, max(0.0, LANE_POS_CENTER - shift))))
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
   if hud.leftLaneDepart or hud.rightLaneDepart:
