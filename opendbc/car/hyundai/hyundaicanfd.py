@@ -148,8 +148,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   #   off -> LEFT(starting,finishing) -> off -> RIGHT(starting,finishing) -> off
   # driven by the stock 0x161 COUNTER. Forces lfa_icon + send_161.
   # Display (HUD) only; no steering/control effect. REVERT before vehicle use.
+  # Only active while essentially parked; auto-disables once the car is moving so
+  # it never overlays the real lane display while driving.
   CCNC_DEV_STOPPED_LANECHANGE_TEST = True
-  if CCNC_DEV_STOPPED_LANECHANGE_TEST:
+  CCNC_DEV_TEST_MAX_SPEED = 2.0  # m/s (~7 km/h); above this the test is off
+  if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
     lfa_icon = 2
     send_161 = True
     _cnt = int(msg_161["COUNTER"])
