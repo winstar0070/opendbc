@@ -250,11 +250,14 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       held_dir = cur_dir
 
     # held_dir: 1=left pushes lanes right(+), 2=right pushes lanes left(-)
+    # Sum-of-60 scale (center 30, edges 0/60) to push further than the old 0/30.
+    LANE_POS_CENTER = 30.0
+    LANE_POS_SPAN = 30.0   # prog=1 reaches 0 or 60
     dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
-    lp = 15.0 + LANE_POS_SIGN * dir_sign * prog * 15.0
-    lp = min(30.0, max(0.0, lp))
+    lp = LANE_POS_CENTER + LANE_POS_SIGN * dir_sign * prog * LANE_POS_SPAN
+    lp = min(60.0, max(0.0, lp))
     left_lane = int(round(lp))
-    right_lane = 30 - left_lane
+    right_lane = 60 - left_lane
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
   if hud.leftLaneDepart or hud.rightLaneDepart:
