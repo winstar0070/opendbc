@@ -144,6 +144,10 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # 표시(HUD) 전용이며 조향/차선변경 제어와 무관. 검증 후 이 커밋을 revert 할 것. (ccnc-lane-change-smonth dev-only)
   CCNC_DEV_FORCE_LANE_CHANGE = True
   lane_change_speed_min = 0.0 if CCNC_DEV_FORCE_LANE_CHANGE else LANE_CHANGE_SPEED_MIN
+  if CCNC_DEV_FORCE_LANE_CHANGE:
+    # Dev-only HUD force: MADS/openpilot not engaged (lfa_icon=0) still gates the
+    # animation off, so force lfa_icon active (2) to pass it. Display only; no control effect.
+    lfa_icon = 2
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
