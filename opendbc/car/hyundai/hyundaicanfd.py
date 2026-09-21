@@ -216,24 +216,39 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     #   off(0)/preLaneChange(1): center (15)
     #   laneChangeStarting(2):   bias toward the target lane (left -> smaller,
     #                            right -> larger left_pos) so the car appears to
-    #                            move into the green target lane
-    #   laneChangeFinishing(3):  converge back to center (15) = the target lane
-    #                            has become the ego lane
-    # A low-pass makes the whole slide-and-recenter smooth. Direction: 1=left, 2=right.
-    LANE_CHANGE_BIAS = 9.0  # how far the display leans toward the target lane
-    if lane_change_state == 2 and lane_change_direction == 1:
-      left_target = 15.0 - LANE_CHANGE_BIAS
-    elif lane_change_state == 2 and lane_change_direction == 2:
-      left_target = 15.0 + LANE_CHANGE_BIAS
-    elif lane_change_state in (1, 3) or lane_change_state == 0:
+    # Target animation (car icon stays centered; the LANES move):
+    #   left change:  existing lanes slide RIGHT, green fills the LEFT lane;
+    #   right change: existing lanes slide LEFT,  green fills the RIGHT lane.
+    # Keep pushing the lanes in one direction for the WHOLE change
+    # (starting(2) AND finishing(3)) so the green target lane travels all the way
+    # to center; when the change ends (off), reset so the green lane reads as the
+    # new ego lane (centered). Do NOT re-center during finishing -- that would pull
+    # the lanes back before the green reaches the middle.
+    # LANE_POS_SIGN flips the on-screen direction if the cluster maps position the
+    # opposite way (set from on-vehicle observation).
+    LANE_CHANGE_BIAS = 12.0  # how far the lanes lean by the end of the change
+    LANE_POS_SIGN = 1        # flip to -1 if the slide goes the wrong way on the cluster
+    changing = lane_change_state in (2, 3)
+    if changing and lane_change_direction == 1:      # left -> push lanes right
+      left_target = 15.0 + LANE_POS_SIGN * LANE_CHANGE_BIAS
+    elif changing and lane_change_direction == 2:    # right -> push lanes left
+      left_target = 15.0 - LANE_POS_SIGN * LANE_CHANGE_BIAS
+    else:                                            # pre / off -> centered
       left_target = 15.0
 
     if disp_state is not None and send_161:
-      LANE_POS_ALPHA = 0.35  # 0..1, smaller = smoother/slower
+      LANE_POS_ALPHA = 0.20  # 0..1, smaller = smoother/slower slide
       lp = disp_state.get("left_pos")
       if lp is None:
-        lp = left_target
-      lp += (left_target - lp) * LANE_POS_ALPHA
+        lp = 15.0
+      # On the change ENDING (was changing, now off), snap-reset to center so the
+      # green lane becomes the new ego lane instead of sliding back.
+      prev_changing = disp_state.get("prev_changing", False)
+      if prev_changing and not changing:
+        lp = 15.0
+      else:
+        lp += (left_target - lp) * LANE_POS_ALPHA
+      disp_state["prev_changing"] = changing
       disp_state["left_pos"] = lp
       left_lane = int(round(lp))
       right_lane = 30 - left_lane
