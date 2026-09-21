@@ -152,23 +152,43 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # it never overlays the real lane display while driving.
   CCNC_DEV_STOPPED_LANECHANGE_TEST = True
   CCNC_DEV_TEST_MAX_SPEED = 2.0  # m/s (~7 km/h); above this the test is off
+  # EXPERIMENT: sweep one unknown field's values to discover its effect on the
+  # cluster (does it move the ego car into the target lane?). One field at a time.
+  CCNC_DEV_FIELD_SWEEP = True
+  CCNC_DEV_SWEEP_FIELD = "LANE_ZOOM"   # LANE_ZOOM | CAR_CIRCLE | CENTERLINE | LANE_HIGHLIGHT
+  _sweep_field = None   # field-sweep experiment state (set inside the dev gate)
+  _sweep_val = 0
   if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
     lfa_icon = 2
     send_161 = True
     _cnt = int(msg_161["COUNTER"])
     _stage = (_cnt // 40) % 8   # 8 stages, ~2s each at ~20Hz
-    # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
-    if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
-      lane_change_state = 2 if _stage == 1 else 3
+    # FIELD-SWEEP EXPERIMENT: while enabled, override the animation and instead
+    # sweep ONE unknown field's value so we can see what it does on the cluster.
+    # Watch which one moves the ego car / view toward the target lane.
+    if CCNC_DEV_FIELD_SWEEP:
+      # Sweep the chosen field 0..max over stages; keep a left blinker+change on
+      # so the display shows the crossing context while the field value steps.
+      _sweep_maxes = {"LANE_ZOOM": 3, "CAR_CIRCLE": 7, "CENTERLINE": 3, "LANE_HIGHLIGHT": 15}
+      _sweep_field = CCNC_DEV_SWEEP_FIELD
+      _sweep_val = _stage % (_sweep_maxes.get(_sweep_field, 3) + 1)
+      # drive a left change so the target lane / green context is present
+      lane_change_state = 2
       lane_change_direction = 1
-      left_blinker, right_blinker = True, False   # show left arrow
-    elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
-      lane_change_state = 2 if _stage == 5 else 3
-      lane_change_direction = 2
-      left_blinker, right_blinker = False, True   # show right arrow
+      left_blinker, right_blinker = True, False
     else:
-      lane_change_state, lane_change_direction = 0, 0
-      left_blinker, right_blinker = False, False
+      # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
+      if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
+        lane_change_state = 2 if _stage == 1 else 3
+        lane_change_direction = 1
+        left_blinker, right_blinker = True, False   # show left arrow
+      elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
+        lane_change_state = 2 if _stage == 5 else 3
+        lane_change_direction = 2
+        left_blinker, right_blinker = False, True   # show right arrow
+      else:
+        lane_change_state, lane_change_direction = 0, 0
+        left_blinker, right_blinker = False, False
 
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
@@ -278,6 +298,12 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     right_lane = 30 - left_lane
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
+    # FIELD-SWEEP: override the chosen unknown field with the swept value so we
+    # can observe its effect. LANE_HIGHLIGHT also needs a distance to render.
+    if _sweep_field is not None:
+      msg_161[_sweep_field] = _sweep_val
+      if _sweep_field == "LANE_HIGHLIGHT":
+        msg_161["LANE_HIGHLIGHT_DISTANCE"] = 300  # 30.0 m so the highlight shows
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
 
