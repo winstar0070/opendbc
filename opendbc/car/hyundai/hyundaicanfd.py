@@ -204,36 +204,30 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     elif lane_change_direction == 2:
       _fill_right = True
 
-  # Lane-line COLOUR/visibility for the crossing. Normal driving = WHITE (2);
-  # during a change the lines are GREEN (6). The catch: as a line slides toward
-  # the car center it would sit UNDER the car icon -- so once the slide is far
-  # enough (prog past a threshold) we HIDE the inner line (1) and let the green
-  # fill wrap the car instead, so no line ever crosses under it. After LANDING the
-  # crossed-into lane is the ego lane: blink WHITE<->GREEN ~1s (wins over the
-  # blinker's green-hold, still usually on). 0x161 ~20 Hz -> (COUNTER//20)%2.
+  # Lane-line visibility/colour rule (simple):
+  #   normal      -> WHITE (2)
+  #   CHANGING    -> BOTH lines HIDDEN (1). Once the green is up we hide the lines
+  #                  entirely; the green background carries the motion.
+  #   LANDED      -> BOTH lines RETURN and blink WHITE<->GREEN (~1s) as the
+  #                  "change complete" cue, then settle to white.
+  # 0x161 ~20 Hz -> (COUNTER // 20) % 2 toggles ~1 Hz.
   _landed_now = disp_state is not None and disp_state.get("lc_landed", False)
   _blink_phase_green = (int(msg_161["COUNTER"]) // 20) % 2 == 0
-  # prior-frame progress/direction (this block runs before the scale block updates
-  # them), used to decide when the sliding inner line should vanish under the car.
   _prev_prog = disp_state.get("lc_prog", 0.0) if disp_state is not None else 0.0
   _prev_dir = disp_state.get("lc_dir", 0) if disp_state is not None else 0
-  HIDE_PROG = 0.6   # past this slide fraction the inner line would hit the car -> hide it
-  # inner line = the one sliding toward center: left line on a left change (dir 1),
-  # right line on a right change (dir 2).
-  _hide_left = (_prev_dir == 1 and _prev_prog >= HIDE_PROG and not _landed_now)
-  _hide_right = (_prev_dir == 2 and _prev_prog >= HIDE_PROG and not _landed_now)
+  _changing_now = (_prev_prog > 0.0 or _prev_dir) and not _landed_now
 
-  def _laneline_color(visible, depart, hidden):
+  def _laneline_color(visible, depart):
     if not lfa_icon:
       return 0
-    if hidden or not visible:
-      return 1                                 # HIDDEN (line would cross the car)
+    if not visible:
+      return 1
     if depart:
       return 4
+    if _changing_now:
+      return 1                                 # HIDDEN while the green is sliding
     if _landed_now:
-      return 6 if _blink_phase_green else 2   # post-landing white<->green blink
-    if any_blinker:
-      return 6                                 # solid green while crossing
+      return 6 if _blink_phase_green else 2   # returned + white<->green blink
     return 2                                   # normal white
 
   msg_161.update({
@@ -242,8 +236,8 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LFA_ICON": 2 if lfa_icon else 0,
     "CENTERLINE": 1 if lfa_icon else 0,
     "LANELINE_CURVATURE": curvature[max(-15, min(int(out.steeringAngleDeg / 4.5), 15))] if lfa_icon and not any_blinker else 15,
-    "LANELINE_LEFT": _laneline_color(hud.leftLaneVisible, hud.leftLaneDepart, _hide_left),
-    "LANELINE_RIGHT": _laneline_color(hud.rightLaneVisible, hud.rightLaneDepart, _hide_right),
+    "LANELINE_LEFT": _laneline_color(hud.leftLaneVisible, hud.leftLaneDepart),
+    "LANELINE_RIGHT": _laneline_color(hud.rightLaneVisible, hud.rightLaneDepart),
     "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.leftBlindspot else 2 if any_blinker else 4),
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
