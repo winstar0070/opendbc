@@ -173,6 +173,15 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
+  # Green-fill direction: held while the lane-change animation is active OR easing
+  # back (disp_state), else the current lane_change_direction. Keeps green lit
+  # through the ease-out.
+  _green_dir = 0
+  if disp_state is not None and (disp_state.get("lc_prog", 0.0) > 0.0 or disp_state.get("lc_dir", 0)):
+    _green_dir = disp_state.get("lc_dir", 0)
+  elif lane_change_state in (2, 3):
+    _green_dir = lane_change_direction
+
   msg_161.update({
     "DAW_ICON": 0,
     "LKA_ICON": 0,
@@ -185,11 +194,12 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
     "LCA_RIGHT_ARROW": 2 if right_blinker else 0,
-    # Fill the target lane area green while a lane change is in progress, mirroring
-    # the stock cluster (see carrotpilot). laneChangeState: 2=starting, 3=finishing;
-    # direction: 1=left, 2=right. Returns to 0 (centered) when the change ends.
-    "LANE_LEFT": 1 if (lfa_icon and lane_change_state in (2, 3) and lane_change_direction == 1) else 0,
-    "LANE_RIGHT": 1 if (lfa_icon and lane_change_state in (2, 3) and lane_change_direction == 2) else 0,
+    # Fill the target lane area green during the change AND while it eases back to
+    # center (so the green persists until the lane visually recenters). Uses the
+    # held direction/progress tracked in disp_state (prior frame) so it stays lit
+    # through the ease-out, not just while lane_change_state is 2/3.
+    "LANE_LEFT": 1 if (lfa_icon and _green_dir == 1) else 0,
+    "LANE_RIGHT": 1 if (lfa_icon and _green_dir == 2) else 0,
   })
 
   # Lane-change lane animation (car icon stays centered; the LANES move).
@@ -203,35 +213,46 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # the cluster maps position the opposite way (confirm on-vehicle).
   # LANELINE_LEFT_POSITION is 6-bit (0..63); we keep left+right centered on 30.
   if lfa_icon:
-    LANE_CHANGE_BIAS = 15.0  # full lean: target reaches the edge (0/30) so green centers
-    LANE_POS_SIGN = -1       # on-vehicle: slide direction was inverted, so -1
+    # Linear-progress animation so the slide REACHES the edge (not just approaches
+    # it) and the recenter is smooth instead of a hard snap.
+    #   prog 0..1 ramps UP while changing (green target lane slides to center),
+    #   then ramps DOWN to 0 after the change ends (the green lane, now centered,
+    #   eases back to the neutral ego view). Position = 15 + dir_sign * prog * 15,
+    #   so prog=1 hits the edge (0 or 30) exactly.
+    # LANE_POS_SIGN = -1 (on-vehicle: slide direction was inverted).
+    LANE_POS_SIGN = -1
+    PROG_STEP = 0.06         # per-0x161-frame ramp; ~17 frames (~0.85s) end to end
     changing = lane_change_state in (2, 3)
-    if changing and lane_change_direction == 1:      # left -> push lanes right
-      left_target = 15.0 + LANE_POS_SIGN * LANE_CHANGE_BIAS
-    elif changing and lane_change_direction == 2:    # right -> push lanes left
-      left_target = 15.0 - LANE_POS_SIGN * LANE_CHANGE_BIAS
-    else:                                            # pre / off -> centered
-      left_target = 15.0
+    # direction of travel: left(1) or right(2); hold last direction while easing out
+    if changing and lane_change_direction in (1, 2):
+      cur_dir = lane_change_direction
+    else:
+      cur_dir = 0
 
     if disp_state is not None:
-      # Advance the low-pass only on a real 0x161 update; create_ccnc is also
-      # called on 0x162-only updates and would otherwise double-step.
       if send_161:
-        LANE_POS_ALPHA = 0.22  # 0..1, smaller = smoother/slower slide
-        lp = disp_state.get("left_pos", 15.0)
-        prev_changing = disp_state.get("prev_changing", False)
-        if prev_changing and not changing:
-          lp = 15.0  # change ended: green lane becomes the new ego lane
+        prog = disp_state.get("lc_prog", 0.0)
+        held_dir = disp_state.get("lc_dir", 0)
+        if changing:
+          held_dir = cur_dir
+          prog = min(1.0, prog + PROG_STEP)      # ramp up to full slide
         else:
-          lp += (left_target - lp) * LANE_POS_ALPHA
-        lp = min(30.0, max(0.0, lp))
-        disp_state["prev_changing"] = changing
-        disp_state["left_pos"] = lp
+          prog = max(0.0, prog - PROG_STEP)      # ease back to center
+          if prog == 0.0:
+            held_dir = 0
+        disp_state["lc_prog"] = prog
+        disp_state["lc_dir"] = held_dir
       else:
-        lp = disp_state.get("left_pos", 15.0)
+        prog = disp_state.get("lc_prog", 0.0)
+        held_dir = disp_state.get("lc_dir", 0)
     else:
-      lp = left_target
+      prog = 1.0 if changing else 0.0
+      held_dir = cur_dir
 
+    # held_dir: 1=left pushes lanes right(+), 2=right pushes lanes left(-)
+    dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
+    lp = 15.0 + LANE_POS_SIGN * dir_sign * prog * 15.0
+    lp = min(30.0, max(0.0, lp))
     left_lane = int(round(lp))
     right_lane = 30 - left_lane
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
