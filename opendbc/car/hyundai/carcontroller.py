@@ -4,7 +4,7 @@ from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_avoidance
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
-from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, camera_confirms_lanes
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
 from opendbc.car.interfaces import CarControllerBase
@@ -227,7 +227,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
                               ((model.direction == 1 and CS.out.leftBlinker and not CS.out.rightBlinker) or
                                (model.direction == 2 and CS.out.rightBlinker and not CS.out.leftBlinker)))
           changing = (model is not None and model.state in (2, 3) and matching_blinker and
-                      CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS)
+                      CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS and
+                      camera_confirms_lanes(model, CS.msg_1b5, CS.ccnc_camera_time_nanos, CS.ccnc_display_time_nanos))
           lane_values = self.ccnc_display.update(model if changing else None)
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CS.out.leftBlinker,
                                                   CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,

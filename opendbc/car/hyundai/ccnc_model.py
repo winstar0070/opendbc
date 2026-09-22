@@ -49,6 +49,24 @@ def lane_pair(lanes, index):
   return (left, right) if 2.4 <= right - left <= 4.8 else None
 
 
+def camera_confirms_lanes(sample, camera, camera_time_nanos, display_time_nanos):
+  """Veto inconsistent geometry; camera lane quality does not prove an adjacent lane."""
+  if (sample is None or camera_time_nanos <= 0 or display_time_nanos <= 0 or
+      abs(display_time_nanos - camera_time_nanos) > 150_000_000):
+    return False
+  if camera.get('Info_LftLnQualSta') not in (2, 3) or camera.get('Info_RtLnQualSta') not in (2, 3):
+    return False
+  model_pair = lane_pair(sample.lanes, 1)
+  positions = (camera.get('Info_LftLnPosVal', math.nan), camera.get('Info_RtLnPosVal', math.nan))
+  if model_pair is None or not all(math.isfinite(p) for p in positions):
+    return False
+  # Compare per-side distances, not assumed camera/model sign conventions.
+  # These are display-only consistency tolerances, not calibrated control limits.
+  camera_width = sum(abs(p) for p in positions)
+  return (2.4 <= camera_width <= 4.8 and abs(camera_width - (model_pair[1] - model_pair[0])) <= 0.6 and
+          all(abs(abs(c) - abs(m)) <= 0.75 for c, m in zip(positions, model_pair, strict=True)))
+
+
 def smooth_pair(previous, current, dt):
   if previous is None:
     return current
