@@ -8,6 +8,7 @@ from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 # Temporary, stationary-only left/right lane handoff demo. Disable after on-cluster validation.
 CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
+CCNC_LANE_DEMO_SIDE_FRAMES = 240
 
 
 class CanBus(CanBusBase):
@@ -131,42 +132,42 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def ccnc_stopped_lane_handoff(frame):
-  # Each direction takes 200 source frames (~10s at 20Hz). Do not use the
-  # stock 8-bit COUNTER as a clock: it wraps before a full left/right cycle.
-  phase = frame % 200
-  left_change = (frame // 200) % 2 == 0
-  sliding = 40 <= phase < 120
-  transferring = 120 <= phase < 124
-  rebinding = 122 <= phase < 124
-  central_fill = 120 <= phase < 184
+  # Each direction: 2s idle, 6s continuous travel, 1s green hold, 2s blink,
+  # 1s idle (source 0x161 at ~20Hz). The clock is independent of COUNTER wrap.
+  phase = frame % CCNC_LANE_DEMO_SIDE_FRAMES
+  left_change = (frame // CCNC_LANE_DEMO_SIDE_FRAMES) % 2 == 0
+  moving = 40 <= phase < 160
+  progress = min(1.0, max(0.0, (phase - 40) / 119.0))
+  # One curve across the entire crossing, with zero velocity and acceleration
+  # at both ends. Round only the final CAN positions (integer signal fields).
+  eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
+  travel = 30.0 * eased
+  crossed = travel >= 15.0
+  target_fill = moving and not crossed
+  central_fill = crossed and phase < 220
 
   left_position = right_position = 15
+  if moving:
+    # Left change: 15/15 -> 0/30, rebind to 30/0, continue to 15/15.
+    # After rebinding both boundaries keep moving in the SAME screen direction;
+    # never reverse the old lane toward center or snap directly to 15/15.
+    position = 15.0 - travel if not crossed else 45.0 - travel
+    left_position = round(position) if left_change else 30 - round(position)
+    right_position = 30 - left_position
+
   left_color = right_color = 6
-  if sliding or (transferring and not rebinding):
-    progress = min(1.0, (phase - 40) / 79.0)
-    eased = progress * progress * (3.0 - 2.0 * progress)
-    shift = round(9.0 * eased)
-    inner, outer = 15 - shift, 15 + shift
-    inner_color = 1 if inner <= 8 else 6  # Hide before the boundary reaches the car.
-    if left_change:
-      left_position, right_position = inner, outer
-      left_color = inner_color
-    else:
-      left_position, right_position = outer, inner
-      right_color = inner_color
+  if moving:
+    left_color = 1 if left_position <= 8 else 6
+    right_color = 1 if right_position <= 8 else 6
+    if abs(travel - 15.0) <= 1.5:
+      # Mask the boundary exchange on BOTH sides of the wrap; the target/central
+      # green floor carries the crossing. Reveal the new lines as they move in.
+      left_color = right_color = 1
 
-  if rebinding:
-    # The central fill stays on while both boundaries are briefly hidden.
-    # Rebind to the new lane at 15/15; never animate the old lines backward.
-    left_color = right_color = 1
-
-  # Keep the central green floor after entering the new lane. Hold green borders
-  # for 1s, blink white/green twice over 2s, then settle to white and clear the fill. These phases
-  # are clocked by source frames, so COUNTER wrap cannot truncate the effect.
-  if phase < 40 or phase >= 184:
+  if phase < 40 or phase >= 220:
     left_color = right_color = 2
-  elif 144 <= phase < 184:
-    left_color = right_color = 2 if ((phase - 144) // 10) % 2 == 0 else 6
+  elif 180 <= phase < 220:
+    left_color = right_color = 2 if ((phase - 180) // 10) % 2 == 0 else 6
 
   return {
     "LANELINE_LEFT": left_color,
@@ -175,8 +176,8 @@ def ccnc_stopped_lane_handoff(frame):
     "LANELINE_RIGHT_POSITION": right_position,
     "LANELINE_CURVATURE": 15,
     "CENTERLINE": 0,
-    "LANE_LEFT": int(sliding and left_change),
-    "LANE_RIGHT": int(sliding and not left_change),
+    "LANE_LEFT": int(target_fill and left_change),
+    "LANE_RIGHT": int(target_fill and not left_change),
     "LANE_HIGHLIGHT": int(central_fill),
     "LANE_HIGHLIGHT_DISTANCE": 60.0 if central_fill else 0.0,
   }
@@ -484,7 +485,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       if send_161:
         frame = disp_state.get("green_test_frame", 0)
         disp_state["green_test_values"] = ccnc_stopped_lane_handoff(frame)
-        disp_state["green_test_frame"] = (frame + 1) % 400
+        disp_state["green_test_frame"] = (frame + 1) % (2 * CCNC_LANE_DEMO_SIDE_FRAMES)
       values = disp_state.get("green_test_values", ccnc_stopped_lane_handoff(0))
     else:
       values = ccnc_stopped_lane_handoff(0)

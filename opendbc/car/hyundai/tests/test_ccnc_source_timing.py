@@ -100,7 +100,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.controller.lfa_icon = 0
     self.hud.leftLaneVisible = self.hud.rightLaneVisible = False
     outputs = []
-    for frame in range(800):
+    for frame in range(960):
       self.cs.msg_161 = copy.copy(self.msg_161)
       self.cs.msg_161["COUNTER"] = frame % 256
       _, data, _ = self.display_messages(frame, updated_161=True)[0]
@@ -114,31 +114,52 @@ class TestCcncSourceTiming(unittest.TestCase):
         for side in ("LEFT", "RIGHT"):
           if values[f"LANELINE_{side}_POSITION"] <= 8:
             self.assertEqual(values[f"LANELINE_{side}"], 1)
-        phase = frame % 200
-        if 40 <= phase < 120:
+        phase = frame % 240
+        if 40 <= phase < 100:
           self.assertEqual(values["LANE_HIGHLIGHT"], 0)
-          self.assertEqual(values["LANE_LEFT"], int((frame // 200) % 2 == 0))
-          self.assertEqual(values["LANE_RIGHT"], int((frame // 200) % 2 == 1))
+          self.assertEqual(values["LANE_LEFT"], int((frame // 240) % 2 == 0))
+          self.assertEqual(values["LANE_RIGHT"], int((frame // 240) % 2 == 1))
         else:
-          highlight = 120 <= phase < 184
+          highlight = 100 <= phase < 220
           self.assertEqual(values["LANE_HIGHLIGHT"], int(highlight))
           self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if highlight else 0.0)
           self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"]), (0, 0))
-        if phase in (122, 123):
+        if phase in (99, 100):
           self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (1, 1))
-          self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (15, 15))
-        elif phase >= 124 or phase < 40:
-          color = 2 if phase < 40 or phase >= 184 else 6
-          if 144 <= phase < 184:
-            color = 2 if ((phase - 144) // 10) % 2 == 0 else 6
+        elif phase >= 160 or phase < 40:
+          color = 2 if phase < 40 or phase >= 220 else 6
+          if 180 <= phase < 220:
+            color = 2 if ((phase - 180) // 10) % 2 == 0 else 6
           self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
           self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (15, 15))
-    for frame in range(200):
+    for frame in range(240):
       for key in ("LANELINE_LEFT", "LANELINE_LEFT_POSITION", "LANE_LEFT"):
-        self.assertEqual(outputs[frame][key], outputs[frame + 200][key.replace("LEFT", "RIGHT")])
+        self.assertEqual(outputs[frame][key], outputs[frame + 240][key.replace("LEFT", "RIGHT")])
       for key in outputs[frame]:
         if key not in ("COUNTER", "CHECKSUM"):
-          self.assertEqual(outputs[frame][key], outputs[frame + 400][key])
+          self.assertEqual(outputs[frame][key], outputs[frame + 480][key])
+
+    # Both directions travel through a complete lane, then keep travelling in
+    # the same direction after rebinding instead of snapping back to 15/15.
+    for start in (0, 240):
+      side = "LEFT" if start == 0 else "RIGHT"
+      positions = [outputs[i][f"LANELINE_{side}_POSITION"] for i in range(start + 40, start + 160)]
+      self.assertEqual((min(positions), max(positions)), (0, 30))
+      travel = 0
+      wraps = 0
+      for i in range(start + 41, start + 160):
+        before, after = outputs[i - 1], outputs[i]
+        delta = after[f"LANELINE_{side}_POSITION"] - before[f"LANELINE_{side}_POSITION"]
+        if delta > 15:
+          wraps += 1
+          delta -= 30
+          for values in (before, after):
+            self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (1, 1))
+            self.assertTrue(values["LANE_LEFT"] or values["LANE_RIGHT"] or values["LANE_HIGHLIGHT"])
+        self.assertIn(delta, (-1, 0))
+        travel -= delta
+      self.assertEqual(wraps, 1)
+      self.assertEqual(travel, 30)
 
   def test_stopped_animation_only_advances_on_source_161(self):
     self.cs.out.vEgo = 0.0
@@ -182,7 +203,7 @@ class TestCcncSourceTiming(unittest.TestCase):
 
   def test_green_line_test_preserves_departure_warnings(self):
     self.cs.out.vEgo = 0.0
-    for phase in (0, 122):
+    for phase in (0, 100):
       for left_depart, right_depart in ((True, False), (False, True), (True, True)):
         with self.subTest(phase=phase, left=left_depart, right=right_depart):
           self.controller.ccnc_disp["green_test_frame"] = phase
