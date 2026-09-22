@@ -220,9 +220,17 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
       if CS.ccnc_0x161_updated or CS.ccnc_0x162_updated:
         lane_values = None
         if CS.ccnc_0x161_updated:
-          lane_values = self.ccnc_display.update(self.ccnc_model if self.lfa_icon else None)
-        can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CC.leftBlinker,
-                                                  CC.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
+          model = self.ccnc_model
+          # CC's requested blinkers come from model metadata too; require the
+          # independently observed vehicle lamps before overriding stock lanes.
+          matching_blinker = (model is not None and
+                              ((model.direction == 1 and CS.out.leftBlinker and not CS.out.rightBlinker) or
+                               (model.direction == 2 and CS.out.rightBlinker and not CS.out.leftBlinker)))
+          changing = (model is not None and model.state in (2, 3) and matching_blinker and
+                      CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS)
+          lane_values = self.ccnc_display.update(model if changing else None)
+        can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CS.out.leftBlinker,
+                                                  CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
                                                   lane_values=lane_values))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):

@@ -50,6 +50,8 @@ class TestCcncSourceTiming(unittest.TestCase):
       out=SimpleNamespace(
         steeringAngleDeg=0.0,
         vEgo=20.0,
+        leftBlinker=False,
+        rightBlinker=False,
         leftBlindspot=False,
         rightBlindspot=False,
         vCruiseCluster=0.0,
@@ -60,6 +62,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     )
     self.cc = SimpleNamespace(
       enabled=False,
+      latActive=False,
       hudControl=self.hud,
       leftBlinker=False,
       rightBlinker=False,
@@ -104,7 +107,9 @@ class TestCcncSourceTiming(unittest.TestCase):
       self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 0))
 
   def test_model_geometry_and_stock_fallback(self):
-    self.controller.ccnc_model = LaneModelSample(1.0, (-4.8, -1.2, 2.4, 6.0), 0, 0)
+    self.cc.latActive = True
+    self.cs.out.leftBlinker = True
+    self.controller.ccnc_model = LaneModelSample(1.0, (-4.8, -1.2, 2.4, 6.0), 2, 1)
     _, data, _ = self.display_messages(0, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
     self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (10, 20))
@@ -117,6 +122,8 @@ class TestCcncSourceTiming(unittest.TestCase):
       self.assertEqual(values[key], self.msg_161[key])
 
   def test_source_162_does_not_advance_model_display(self):
+    self.cc.latActive = True
+    self.cs.out.leftBlinker = True
     self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 1)
     self.display_messages(0, updated_161=True)
     state = copy.deepcopy(vars(self.controller.ccnc_display))
@@ -125,6 +132,8 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.assertEqual(vars(self.controller.ccnc_display), state)
 
   def test_model_display_preserves_departure_warnings_and_arrows(self):
+    self.cc.latActive = True
+    self.cs.out.leftBlinker = True
     self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 1)
     self.hud.leftLaneDepart = self.hud.rightLaneDepart = True
     self.cc.leftBlinker = True
@@ -133,6 +142,48 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (4, 4))
     self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (2, 0))
     self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
+
+  def test_only_confirmed_lane_change_overrides_stock_geometry(self):
+    # Model/requested blinkers alone must not activate the custom display.
+    self.cc.leftBlinker = True
+    cases = [
+      (0, 1, True, True, False, 20.0),
+      (1, 1, True, True, False, 20.0),
+      (2, 1, True, False, False, 20.0),
+      (2, 1, True, False, True, 20.0),
+      (2, 1, True, True, True, 20.0),
+      (2, 1, False, True, False, 20.0),
+      (2, 1, True, True, False, 0.0),
+      (2, 1, True, True, False, 8.0),
+      (2, 0, True, True, False, 20.0),
+    ]
+    for state, direction, lat_active, left, right, speed in cases:
+      with self.subTest(state=state, direction=direction, lat_active=lat_active, blinkers=(left, right), speed=speed):
+        self.cc.latActive = lat_active
+        self.cs.out.leftBlinker, self.cs.out.rightBlinker = left, right
+        self.cs.out.vEgo = speed
+        for frame in range(6):
+          offset = 0.6 if frame % 2 else -0.6
+          self.controller.ccnc_model = LaneModelSample(frame * 0.05, tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4)), state, direction)
+          self.cs.msg_161 = copy.copy(self.msg_161)
+          _, data, _ = self.display_messages(frame, updated_161=True)[0]
+          values = decode("CCNC_0x161", 0x161, data.hex())
+          for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANE_LEFT", "LANE_RIGHT", "LANE_HIGHLIGHT"):
+            self.assertEqual(values[key], self.msg_161[key])
+          self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (2 if left else 0, 2 if right else 0))
+
+  def test_blinker_cancel_resets_active_display(self):
+    self.cc.latActive = True
+    self.cs.out.rightBlinker = True
+    self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 2)
+    _, data, _ = self.display_messages(0, updated_161=True)[0]
+    self.assertEqual(decode("CCNC_0x161", 0x161, data.hex())["LANE_RIGHT"], 1)
+    self.cs.out.rightBlinker = False
+    self.cs.msg_161 = copy.copy(self.msg_161)
+    _, data, _ = self.display_messages(1, updated_161=True)[0]
+    values = decode("CCNC_0x161", 0x161, data.hex())
+    self.assertEqual(values["LANE_RIGHT"], self.msg_161["LANE_RIGHT"])
+    self.assertIsNone(self.controller.ccnc_display.target)
 
   def test_preserves_stock_phase_and_source_counters(self):
     expected = [(0, 0x161, 10), (2, 0x162, 40), (5, 0x161, 11), (7, 0x162, 41)]
