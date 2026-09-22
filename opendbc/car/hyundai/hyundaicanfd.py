@@ -146,10 +146,15 @@ def ccnc_stopped_lane_handoff(frame):
   # at both ends. Round only the final CAN positions (integer signal fields).
   eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
   travel = 30.0 * eased
-  crossed = travel >= 15.0
-  # Transfer the fill in the same source message as the boundary exchange.
-  # Lighting both areas at once paints the old lane as well as the destination.
-  target_fill = moving and not crossed
+  # Rebind when the encoded inner boundary first reaches zero, slightly before
+  # the continuous trajectory crosses the car. Use that same quantized position
+  # for geometry and fill activation so the new green boundary starts at zero.
+  encoded_travel = round(travel)
+  crossed = encoded_travel >= 15
+  # Keep the old area until the continuous crossing: at 20 Hz this gives the new
+  # line and central fill two source frames to appear before the old fill clears.
+  # The overlap is restricted to the zero-position handoff, not the return path.
+  target_fill = moving and travel < 15.0
   central_fill = crossed and phase < blink_end
 
   left_position = right_position = 15
@@ -157,15 +162,15 @@ def ccnc_stopped_lane_handoff(frame):
     # Keep a constant 30-unit corridor. Rebind boundary identities as the car
     # crosses it, then continue in the same direction toward the 15/15 rest pose.
     # Expanding to 60 also expands the cluster's filled area.
-    left_position = round(15.0 - travel if not crossed else 45.0 - travel)
+    left_position = 15 - encoded_travel if not crossed else 45 - encoded_travel
     right_position = 30 - left_position
     if not left_change:
       left_position, right_position = right_position, left_position
 
   left_color = right_color = 6
-  if moving:
-    # Hide only the boundary immediately under the car. Keep the outer green
-    # boundary visible throughout, and reveal the new inner boundary promptly.
+  if moving and not crossed:
+    # Hide only the old boundary under the car. After rebinding, keep the new
+    # green boundary visible from position zero throughout the return path.
     left_color = 1 if left_position <= 2 else 6
     right_color = 1 if right_position <= 2 else 6
 
