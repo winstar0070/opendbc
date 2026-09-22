@@ -120,8 +120,9 @@ class TestCcncSourceTiming(unittest.TestCase):
           self.assertEqual(values["LANE_LEFT"], int((frame // 200) % 2 == 0))
           self.assertEqual(values["LANE_RIGHT"], int((frame // 200) % 2 == 1))
         else:
-          self.assertEqual(values["LANE_HIGHLIGHT"], 1)
-          self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0)
+          highlight = 120 <= phase < 184
+          self.assertEqual(values["LANE_HIGHLIGHT"], int(highlight))
+          self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if highlight else 0.0)
           self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"]), (0, 0))
         if phase in (122, 123):
           self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (1, 1))
@@ -158,7 +159,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     _, data, _ = self.display_messages(101, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
     self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (15, 15))
-    self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 1))
+    self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 0))
 
   def test_green_line_test_stops_when_vehicle_moves(self):
     self.controller.lfa_icon = 0
@@ -168,8 +169,8 @@ class TestCcncSourceTiming(unittest.TestCase):
         _, data, _ = self.display_messages(frame, updated_161=True)[0]
         values = decode("CCNC_0x161", 0x161, data.hex())
         self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
-        self.assertEqual(values["LANE_HIGHLIGHT"], 1 if color else 0)
-        self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if color else 0.0)
+        self.assertEqual(values["LANE_HIGHLIGHT"], 0)
+        self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 0.0)
 
   def test_green_line_test_can_be_disabled(self):
     self.cs.out.vEgo = 0.0

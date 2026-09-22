@@ -138,6 +138,7 @@ def ccnc_stopped_lane_handoff(frame):
   sliding = 40 <= phase < 120
   transferring = 120 <= phase < 124
   rebinding = 122 <= phase < 124
+  central_fill = 120 <= phase < 184
 
   left_position = right_position = 15
   left_color = right_color = 6
@@ -160,7 +161,7 @@ def ccnc_stopped_lane_handoff(frame):
     left_color = right_color = 1
 
   # Keep the central green floor after entering the new lane. Hold green borders
-  # for 1s, blink white/green twice over 2s, then settle to white. These phases
+  # for 1s, blink white/green twice over 2s, then settle to white and clear the fill. These phases
   # are clocked by source frames, so COUNTER wrap cannot truncate the effect.
   if phase < 40 or phase >= 184:
     left_color = right_color = 2
@@ -176,8 +177,8 @@ def ccnc_stopped_lane_handoff(frame):
     "CENTERLINE": 0,
     "LANE_LEFT": int(sliding and left_change),
     "LANE_RIGHT": int(sliding and not left_change),
-    "LANE_HIGHLIGHT": int(not sliding),
-    "LANE_HIGHLIGHT_DISTANCE": 0.0 if sliding else 60.0,
+    "LANE_HIGHLIGHT": int(central_fill),
+    "LANE_HIGHLIGHT_DISTANCE": 60.0 if central_fill else 0.0,
   }
 
 
