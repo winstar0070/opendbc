@@ -183,10 +183,9 @@ def ccnc_stopped_lane_handoff(frame):
   if moving:
     left_color = 1 if left_position <= 8 else 6
     right_color = 1 if right_position <= 8 else 6
-    if abs(travel - 15.0) <= 1.5:
-      # Mask the boundary exchange on BOTH sides of the wrap; the target/central
-      # green floor carries the crossing. Reveal the new lines as they move in.
-      left_color = right_color = 1
+    # Keep the outer green boundary present throughout the exchange. Hiding
+    # both boundaries may also suppress the cluster's filled lane rendering.
+    # Only the boundary under the car is hidden, before and after it swaps sides.
 
   if phase < 40 or phase >= blink_end:
     left_color = right_color = 2

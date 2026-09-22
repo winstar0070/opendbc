@@ -133,8 +133,13 @@ class TestCcncSourceTiming(unittest.TestCase):
         else:
           self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 0))
           self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 0.0)
+        if moving:
+          self.assertTrue(values["LANELINE_LEFT"] == 6 or values["LANELINE_RIGHT"] == 6)
         if phase in (129, 130):
-          self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (1, 1))
+          near_side = "LEFT" if ((frame // 300) % 2 == 0) == (phase == 129) else "RIGHT"
+          far_side = "RIGHT" if near_side == "LEFT" else "LEFT"
+          self.assertEqual(values[f"LANELINE_{near_side}"], 1)
+          self.assertEqual(values[f"LANELINE_{far_side}"], 6)
         elif phase >= 220 or phase < 40:
           color = 2 if phase < 40 or phase >= 280 else 6
           if 240 <= phase < 280:
@@ -170,7 +175,8 @@ class TestCcncSourceTiming(unittest.TestCase):
           wraps += 1
           delta -= 60
           for values in (before, after):
-            self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (1, 1))
+            for boundary in ("LEFT", "RIGHT"):
+              self.assertEqual(values[f"LANELINE_{boundary}"], 1 if values[f"LANELINE_{boundary}_POSITION"] <= 8 else 6)
             self.assertTrue(values["LANE_LEFT"] or values["LANE_RIGHT"] or values["LANE_HIGHLIGHT"])
         self.assertIn(delta, (-1, 0))
         travel -= delta
@@ -240,9 +246,9 @@ class TestCcncSourceTiming(unittest.TestCase):
           self.hud.rightLaneDepart = right_depart
           messages = self.display_messages(0, updated_161=True, updated_162=True)
           values = decode("CCNC_0x161", 0x161, messages[0][1].hex())
-          normal_color = 2 if phase == 0 else 1
-          self.assertEqual(values["LANELINE_LEFT"], 4 if left_depart else normal_color)
-          self.assertEqual(values["LANELINE_RIGHT"], 4 if right_depart else normal_color)
+          left_color, right_color = (2, 2) if phase == 0 else (6, 1)
+          self.assertEqual(values["LANELINE_LEFT"], 4 if left_depart else left_color)
+          self.assertEqual(values["LANELINE_RIGHT"], 4 if right_depart else right_color)
           self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
 
   def test_preserves_stock_phase_and_source_counters(self):
