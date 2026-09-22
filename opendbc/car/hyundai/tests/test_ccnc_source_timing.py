@@ -1,6 +1,7 @@
 import copy
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from opendbc.can import CANPacker, CANParser
 from opendbc.car.hyundai.carcontroller import CarController
@@ -73,6 +74,9 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.controller.lkas_icon = 0
     self.controller.lfa_icon = 2
     self.controller.last_button_frame = 0
+    self.controller.ccnc_disp = {}
+    self.controller.lane_change_state = 0
+    self.controller.lane_change_direction = 0
 
   def display_messages(self, frame, updated_161=False, updated_162=False):
     self.controller.frame = frame
@@ -82,11 +86,74 @@ class TestCcncSourceTiming(unittest.TestCase):
     return [msg for msg in messages if msg[0] in (0x161, 0x162)]
 
   def test_sends_only_the_source_message_updated_this_control_cycle(self):
-    self.assertEqual([msg[0] for msg in self.display_messages(0, updated_161=True)], [0x161])
-    self.assertEqual(self.display_messages(1), [])
-    self.assertEqual([msg[0] for msg in self.display_messages(2, updated_162=True)], [0x162])
-    self.assertEqual(self.display_messages(5), [])
-    self.assertEqual([msg[0] for msg in self.display_messages(6, updated_161=True, updated_162=True)], [0x161, 0x162])
+    for speed in (0.0, 0.099, 0.1, 20.0):
+      with self.subTest(speed=speed):
+        self.cs.out.vEgo = speed
+        self.assertEqual([msg[0] for msg in self.display_messages(0, updated_161=True)], [0x161])
+        self.assertEqual(self.display_messages(1), [])
+        self.assertEqual([msg[0] for msg in self.display_messages(2, updated_162=True)], [0x162])
+        self.assertEqual(self.display_messages(5), [])
+        self.assertEqual([msg[0] for msg in self.display_messages(6, updated_161=True, updated_162=True)], [0x161, 0x162])
+
+  def test_stopped_green_lines_stay_centered_across_counter_wrap(self):
+    self.cs.out.vEgo = 0.0
+    self.cs.out.steeringAngleDeg = 18.0
+    self.controller.lfa_icon = 0
+    self.controller.lane_change_state = 2
+    self.controller.lane_change_direction = 2
+    self.hud.leftLaneVisible = self.hud.rightLaneVisible = False
+    expected = {
+      "LFA_ICON": 2,
+      "LANELINE_LEFT": 6,
+      "LANELINE_RIGHT": 6,
+      "LANELINE_LEFT_POSITION": 15,
+      "LANELINE_RIGHT_POSITION": 15,
+      "LANELINE_CURVATURE": 15,
+      "CENTERLINE": 0,
+      "LANE_LEFT": 0,
+      "LANE_RIGHT": 0,
+      "LANE_HIGHLIGHT": 0,
+      "LANE_HIGHLIGHT_DISTANCE": 0,
+      "LCA_LEFT_ARROW": 0,
+      "LCA_RIGHT_ARROW": 0,
+    }
+    for frame in range(512):
+      with self.subTest(frame=frame):
+        self.cs.msg_161 = copy.copy(self.msg_161)
+        self.cs.msg_161["COUNTER"] = frame % 256
+        _, data, _ = self.display_messages(frame, updated_161=True)[0]
+        values = decode("CCNC_0x161", 0x161, data.hex())
+        self.assertEqual({key: values[key] for key in expected}, expected)
+        self.assertEqual(values["COUNTER"], frame % 256)
+
+  def test_green_line_test_stops_when_vehicle_moves(self):
+    self.controller.lfa_icon = 0
+    for frame, (speed, color) in enumerate(((0.099, 6), (0.1, 0), (1.0, 0), (20.0, 0), (0.0, 6))):
+      with self.subTest(speed=speed):
+        self.cs.out.vEgo = speed
+        _, data, _ = self.display_messages(frame, updated_161=True)[0]
+        values = decode("CCNC_0x161", 0x161, data.hex())
+        self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
+
+  def test_green_line_test_can_be_disabled(self):
+    self.cs.out.vEgo = 0.0
+    self.controller.lfa_icon = 0
+    with patch("opendbc.car.hyundai.hyundaicanfd.CCNC_DEV_STOPPED_GREEN_LANES_TEST", False):
+      _, data, _ = self.display_messages(0, updated_161=True)[0]
+    values = decode("CCNC_0x161", 0x161, data.hex())
+    self.assertEqual((values["LFA_ICON"], values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (0, 0, 0))
+
+  def test_green_line_test_preserves_departure_warnings(self):
+    self.cs.out.vEgo = 0.0
+    for left_depart, right_depart in ((True, False), (False, True), (True, True)):
+      with self.subTest(left=left_depart, right=right_depart):
+        self.hud.leftLaneDepart = left_depart
+        self.hud.rightLaneDepart = right_depart
+        messages = self.display_messages(0, updated_161=True, updated_162=True)
+        values = decode("CCNC_0x161", 0x161, messages[0][1].hex())
+        self.assertEqual(values["LANELINE_LEFT"], 4 if left_depart else 6)
+        self.assertEqual(values["LANELINE_RIGHT"], 4 if right_depart else 6)
+        self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
 
   def test_preserves_stock_phase_and_source_counters(self):
     expected = [(0, 0x161, 10), (2, 0x162, 40), (5, 0x161, 11), (7, 0x162, 41)]

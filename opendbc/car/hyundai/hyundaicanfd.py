@@ -6,6 +6,10 @@ from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 
+# Temporary, stationary-only cluster test. Disable after checking the green lane lines.
+CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
+
+
 class CanBus(CanBusBase):
   def __init__(self, CP, fingerprint=None, lka_steering=None) -> None:
     super().__init__(CP, fingerprint)
@@ -143,35 +147,12 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
 
-  # ---------------------------------------------------------------------------
-  # TEMP DEV TEST
-  # Parked/stopped only:
-  #   OFF -> LEFT -> OFF -> RIGHT -> OFF
-  # ---------------------------------------------------------------------------
-  CCNC_DEV_STOPPED_LANECHANGE_TEST = True
-  CCNC_DEV_TEST_MAX_SPEED = 2.0
-
-  if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
+  # Keep the existing source cadence/counters; never force an extra 0x161 frame.
+  stopped_green_lanes_test = CCNC_DEV_STOPPED_GREEN_LANES_TEST and 0.0 <= out.vEgo < 0.1
+  if stopped_green_lanes_test:
     lfa_icon = 2
-    send_161 = True
-
-    _cnt = int(msg_161["COUNTER"])
-    _stage = (_cnt // 120) % 8
-
-    if _stage in (1, 2):
-      lane_change_state = 2 if _stage == 1 else 3
-      lane_change_direction = 1
-      left_blinker, right_blinker = True, False
-
-    elif _stage in (5, 6):
-      lane_change_state = 2 if _stage == 5 else 3
-      lane_change_direction = 2
-      left_blinker, right_blinker = False, True
-
-    else:
-      lane_change_state = 0
-      lane_change_direction = 0
-      left_blinker, right_blinker = False, False
+    lane_change_state = 0
+    lane_change_direction = 0
 
   any_blinker = left_blinker or right_blinker
 
@@ -441,6 +422,22 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
 
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
+
+  if stopped_green_lanes_test:
+    # Isolate the two existing lane lines: straight, centered, green, with no fill.
+    # Departure warnings retain priority over the test color.
+    msg_161.update({
+      "LANELINE_LEFT": 4 if hud.leftLaneDepart else 6,
+      "LANELINE_RIGHT": 4 if hud.rightLaneDepart else 6,
+      "LANELINE_LEFT_POSITION": 15,
+      "LANELINE_RIGHT_POSITION": 15,
+      "LANELINE_CURVATURE": 15,
+      "CENTERLINE": 0,
+      "LANE_LEFT": 0,
+      "LANE_RIGHT": 0,
+      "LANE_HIGHLIGHT": 0,
+      "LANE_HIGHLIGHT_DISTANCE": 0.0,
+    })
 
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
