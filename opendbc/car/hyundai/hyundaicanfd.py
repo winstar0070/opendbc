@@ -6,7 +6,7 @@ from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 
-# Temporary, stationary-only cluster test. Disable after checking the green lines and central fill.
+# Temporary, stationary-only left/right lane handoff demo. Disable after on-cluster validation.
 CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
 
 
@@ -130,6 +130,57 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
   return packer.make_can_msg("LFAHDA_CLUSTER", CAN.ECAN, values)
 
 
+def ccnc_stopped_lane_handoff(frame):
+  # Each direction takes 200 source frames (~10s at 20Hz). Do not use the
+  # stock 8-bit COUNTER as a clock: it wraps before a full left/right cycle.
+  phase = frame % 200
+  left_change = (frame // 200) % 2 == 0
+  sliding = 40 <= phase < 120
+  transferring = 120 <= phase < 124
+  rebinding = 122 <= phase < 124
+
+  left_position = right_position = 15
+  left_color = right_color = 6
+  if sliding or (transferring and not rebinding):
+    progress = min(1.0, (phase - 40) / 79.0)
+    eased = progress * progress * (3.0 - 2.0 * progress)
+    shift = round(9.0 * eased)
+    inner, outer = 15 - shift, 15 + shift
+    inner_color = 1 if inner <= 8 else 6  # Hide before the boundary reaches the car.
+    if left_change:
+      left_position, right_position = inner, outer
+      left_color = inner_color
+    else:
+      left_position, right_position = outer, inner
+      right_color = inner_color
+
+  if rebinding:
+    # The central fill stays on while both boundaries are briefly hidden.
+    # Rebind to the new lane at 15/15; never animate the old lines backward.
+    left_color = right_color = 1
+
+  # Keep the central green floor after entering the new lane. Hold green borders
+  # for 1s, blink white/green twice over 2s, then settle to white. These phases
+  # are clocked by source frames, so COUNTER wrap cannot truncate the effect.
+  if phase < 40 or phase >= 184:
+    left_color = right_color = 2
+  elif 144 <= phase < 184:
+    left_color = right_color = 2 if ((phase - 144) // 10) % 2 == 0 else 6
+
+  return {
+    "LANELINE_LEFT": left_color,
+    "LANELINE_RIGHT": right_color,
+    "LANELINE_LEFT_POSITION": left_position,
+    "LANELINE_RIGHT_POSITION": right_position,
+    "LANELINE_CURVATURE": 15,
+    "CENTERLINE": 0,
+    "LANE_LEFT": int(sliding and left_change),
+    "LANE_RIGHT": int(sliding and not left_change),
+    "LANE_HIGHLIGHT": int(not sliding),
+    "LANE_HIGHLIGHT_DISTANCE": 0.0 if sliding else 60.0,
+  }
+
+
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
                 is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, disp_state=None,
                 lane_change_state=0, lane_change_direction=0):
@@ -153,6 +204,10 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     lfa_icon = 2
     lane_change_state = 0
     lane_change_direction = 0
+  elif disp_state is not None:
+    # Start again from the centered view after moving or disabling the demo.
+    disp_state.pop("green_test_frame", None)
+    disp_state.pop("green_test_values", None)
 
   any_blinker = left_blinker or right_blinker
 
@@ -424,20 +479,20 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
 
   if stopped_green_lanes_test:
-    # Keep the verified green lines centered and add the central green fill for validation.
-    # Departure warnings retain priority over the test color.
-    msg_161.update({
-      "LANELINE_LEFT": 4 if hud.leftLaneDepart else 6,
-      "LANELINE_RIGHT": 4 if hud.rightLaneDepart else 6,
-      "LANELINE_LEFT_POSITION": 15,
-      "LANELINE_RIGHT_POSITION": 15,
-      "LANELINE_CURVATURE": 15,
-      "CENTERLINE": 0,
-      "LANE_LEFT": 0,
-      "LANE_RIGHT": 0,
-      "LANE_HIGHLIGHT": 1,
-      "LANE_HIGHLIGHT_DISTANCE": 60.0,  # Physical metres; the packer applies the DBC's 0.1 scale.
-    })
+    if disp_state is not None:
+      if send_161:
+        frame = disp_state.get("green_test_frame", 0)
+        disp_state["green_test_values"] = ccnc_stopped_lane_handoff(frame)
+        disp_state["green_test_frame"] = (frame + 1) % 400
+      values = disp_state.get("green_test_values", ccnc_stopped_lane_handoff(0))
+    else:
+      values = ccnc_stopped_lane_handoff(0)
+    msg_161.update(values)
+    # Departure warnings retain priority even during the hidden-boundary phase.
+    if hud.leftLaneDepart:
+      msg_161["LANELINE_LEFT"] = 4
+    if hud.rightLaneDepart:
+      msg_161["LANELINE_RIGHT"] = 4
 
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
