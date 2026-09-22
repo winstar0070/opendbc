@@ -8,8 +8,6 @@ from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 # Temporary, stationary-only left/right lane handoff demo. Disable after on-cluster validation.
 CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
-# Tune this 30..60 to change the outward push; the rest pose remains 15/15.
-CCNC_LANE_DEMO_OUTER_POSITION = 60
 CCNC_LANE_DEMO_MOVE_FRAMES = 180
 CCNC_LANE_DEMO_SIDE_FRAMES = 40 + CCNC_LANE_DEMO_MOVE_FRAMES + 20 + 40 + 20
 
@@ -149,40 +147,27 @@ def ccnc_stopped_lane_handoff(frame):
   eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
   travel = 30.0 * eased
   crossed = travel >= 15.0
-  # Overlap target and central fill across the boundary exchange (~0.5s).
-  # The cluster may apply these fields on different render frames.
-  target_fill = moving and travel < 16.5
-  central_fill = travel >= 13.5 and phase < blink_end
+  # Transfer the fill in the same source message as the boundary exchange.
+  # Lighting both areas at once paints the old lane as well as the destination.
+  target_fill = moving and not crossed
+  central_fill = crossed and phase < blink_end
 
   left_position = right_position = 15
   if moving:
-    # Expand only during travel: 15/15 -> 0/MAX, exchange hidden boundaries,
-    # then MAX/0 -> 15/15. These are actual CAN positions, not a virtual range.
-    # Test whether the expanded corridor brings the target green area toward the
-    # car; its rendering and clipping above 30 still require cluster testing.
-    outer_limit = max(30, min(60, CCNC_LANE_DEMO_OUTER_POSITION))
-    half_progress = 2.0 * eased if not crossed else 2.0 * eased - 1.0
-    far = (15.0 + (outer_limit - 15.0) * half_progress if not crossed
-           else outer_limit - (outer_limit - 15.0) * half_progress)
-    far_position = round(far)
-    # Maintain the 15+15 corridor while both borders are visible. Expand toward
-    # MAX only after hiding the inner border; on return restore width before
-    # revealing it. The visible outer border keeps the same smooth trajectory.
-    near_position = (30 - far_position if far <= 22.0
-                     else round(8.0 * (outer_limit - far) / (outer_limit - 22.0)))
-    left_position, right_position = ((near_position, far_position) if not crossed
-                                     else (far_position, near_position))
+    # Keep a constant 30-unit corridor. Rebind boundary identities as the car
+    # crosses it, then continue in the same direction toward the 15/15 rest pose.
+    # Expanding to 60 also expands the cluster's filled area.
+    left_position = round(15.0 - travel if not crossed else 45.0 - travel)
+    right_position = 30 - left_position
     if not left_change:
       left_position, right_position = right_position, left_position
 
   left_color = right_color = 6
   if moving:
-    left_color = 1 if left_position <= 8 else 6
-    right_color = 1 if right_position <= 8 else 6
-    if abs(travel - 15.0) <= 1.5:
-      # Mask the boundary exchange on BOTH sides of the wrap; the target/central
-      # green floor carries the crossing. Reveal the new lines as they move in.
-      left_color = right_color = 1
+    # Hide only the boundary immediately under the car. Keep the outer green
+    # boundary visible throughout, and reveal the new inner boundary promptly.
+    left_color = 1 if left_position <= 2 else 6
+    right_color = 1 if right_position <= 2 else 6
 
   if phase < 40 or phase >= blink_end:
     left_color = right_color = 2
