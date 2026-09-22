@@ -28,6 +28,32 @@ class TestModelLanes(unittest.TestCase):
       for i in range(8):
         self.assertIsNone(display.update(sample(i * .05, offset=.05 * i, state=2, direction=direction, edges=edges)))
 
+  def test_initial_missing_target_or_edge_recovers_when_data_arrives(self):
+    for direction in (1, 2):
+      for missing in ('lane', 'edge'):
+        with self.subTest(direction=direction, missing=missing):
+          display = CcncLaneDisplay()
+          lanes = [-5.4, -1.8, 1.8, 5.4]
+          edges = [-9.0, 9.0]
+          if missing == 'lane':
+            lanes[0 if direction == 1 else 3] = None
+          else:
+            edges[0 if direction == 1 else 1] = None
+          self.assertIsNone(display.update(sample(0, state=2, direction=direction, lanes=tuple(lanes), edges=tuple(edges))))
+          recovered = display.update(sample(.05, state=2, direction=direction))
+          self.assertIsNotNone(recovered)
+          self.assertEqual(recovered['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+
+  def test_pending_target_does_not_acquire_another_lane_after_index_switch(self):
+    display = CcncLaneDisplay()
+    self.assertIsNone(display.update(sample(0, state=2, direction=1, lanes=(None, -.1, 3.5, 7.1))))
+    self.assertIsNone(display.update(sample(.05, state=2, direction=1, lanes=(-5.25, -1.65, 1.95, 5.55))))
+
+  def test_confirmed_edge_rejection_does_not_rearm_during_same_change(self):
+    display = CcncLaneDisplay()
+    self.assertIsNone(display.update(sample(0, state=2, direction=2, edges=(-9.0, 2.0))))
+    self.assertIsNone(display.update(sample(.05, state=2, direction=2)))
+
   def test_edge_loss_during_change_clears_display_and_does_not_rearm(self):
     display = CcncLaneDisplay()
     self.assertIsNotNone(display.update(sample(0, state=2, direction=2)))

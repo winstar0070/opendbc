@@ -85,6 +85,8 @@ class CcncLaneDisplay:
     self.timestamp = None
     self.ego = None
     self.target = None
+    self.target_decided = False
+    self.target_hint = None
     self.direction = 0
     self.crossed = False
     self.values = None
@@ -113,8 +115,21 @@ class CcncLaneDisplay:
     if direction != self.direction:
       self.direction = direction
       self.crossed = False
+      self.target = None
+      self.target_decided = False
+      width = ego[1] - ego[0]
+      self.target_hint = sum(ego) / 2 + (-width if direction == 1 else width) if direction else None
+    if direction and not self.target_decided and sample.state == 2:
       # A late/recovered finishing sample cannot identify the original target.
-      self.target = lane_pair(sample.lanes, 0 if direction == 1 else 2) if direction and sample.state == 2 else None
+      # Missing start-up evidence is pending, not a permanent rejection. Retry
+      # until both a target pair and its road edge can actually be evaluated.
+      candidate = lane_pair(sample.lanes, 0 if direction == 1 else 2)
+      edge = sample.edges[0 if direction == 1 else 1] if len(sample.edges) == 2 else None
+      if candidate is not None and edge is not None and math.isfinite(edge):
+        self.target_decided = True
+        # Do not acquire the next lane if model indices switched while waiting.
+        same_target = abs(sum(candidate) / 2 - self.target_hint) <= 0.75
+        self.target = candidate if same_target and target_within_road(candidate, direction, sample.edges) else None
     elif self.target is not None:
       candidates = [p for i in range(3) if (p := lane_pair(sample.lanes, i)) is not None]
       nearest = min(candidates, key=lambda p: abs(sum(p) - sum(self.target)))
@@ -128,7 +143,8 @@ class CcncLaneDisplay:
 
     if direction and not target_within_road(self.target, direction, sample.edges):
       # Do not fall through to model ego geometry: even white model lines could
-      # shake during a turn. Keep stock display until a new change is started.
+      # shake during a turn. Keep stock display while evidence is pending or
+      # the target has been rejected for this change.
       self.target = None
       self.crossed = False
       self.values = None
