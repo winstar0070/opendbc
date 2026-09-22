@@ -64,6 +64,10 @@ class TestModelLanes(unittest.TestCase):
       self.assertEqual(wraps, 1)
       results.append(sequence)
       incoming = 'RIGHT' if direction == 1 else 'LEFT'
+      for v in sequence:
+        self.assertEqual(v[f'LANELINE_{outer}'], 6)
+        hidden = not v['LANE_HIGHLIGHT'] or v[f'LANELINE_{incoming}_POSITION'] < 12
+        self.assertEqual(v[f'LANELINE_{incoming}'], 1 if hidden else 6)
       highlight = [v for v in sequence if v['LANE_HIGHLIGHT']]
       self.assertTrue(highlight)
       self.assertEqual(highlight[0][f'LANELINE_{incoming}'], 1)

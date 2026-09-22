@@ -104,16 +104,14 @@ class CcncLaneDisplay:
     left = max(0, min(30, round(-30 * pair[0] / width)))
     right = 30 - left
     left_color = right_color = 6 if active else 2
-    if filled:
-      if direction == 1 and right < 12:
+    # Hide the incoming boundary from the start of the change, including while
+    # the green area is still beside the car. Keep the opposite boundary visible.
+    # Reveal only after entering the target lane and nearing its center.
+    if active:
+      if direction == 1 and (not filled or right < 12):
         right_color = 1
-      elif direction == 2 and left < 12:
+      elif direction == 2 and (not filled or left < 12):
         left_color = 1
-    elif active:
-      if left <= 2:
-        left_color = 1
-      if right <= 2:
-        right_color = 1
     self.values = {
       'LANELINE_LEFT_POSITION': left, 'LANELINE_RIGHT_POSITION': right,
       'LANELINE_LEFT': left_color, 'LANELINE_RIGHT': right_color,
