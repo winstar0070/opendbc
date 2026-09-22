@@ -127,7 +127,10 @@ class TestCcncSourceTiming(unittest.TestCase):
         if moving:
           self.assertIn(6, (values["LANELINE_LEFT"], values["LANELINE_RIGHT"]))
         if 128 <= phase < 220:
-          self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (6, 6))
+          new_side = "RIGHT" if (frame // 300) % 2 == 0 else "LEFT"
+          outer_side = "LEFT" if new_side == "RIGHT" else "RIGHT"
+          self.assertEqual(values[f"LANELINE_{outer_side}"], 6)
+          self.assertEqual(values[f"LANELINE_{new_side}"], 1 if values[f"LANELINE_{new_side}_POSITION"] < 12 else 6)
         elif phase >= 220 or phase < 40:
           color = 2 if phase < 40 or phase >= 280 else 6
           if 240 <= phase < 280:
@@ -163,7 +166,7 @@ class TestCcncSourceTiming(unittest.TestCase):
       self.assertEqual(wraps, 1)
       self.assertEqual(travel, 30)
 
-  def test_new_green_boundary_and_fill_precede_old_fill_release(self):
+  def test_fill_handoff_keeps_inner_boundary_hidden_until_near_center(self):
     self.cs.out.vEgo = 0.0
     for start, old_side, new_side in ((0, "LEFT", "RIGHT"), (300, "RIGHT", "LEFT")):
       outputs = []
@@ -179,8 +182,13 @@ class TestCcncSourceTiming(unittest.TestCase):
       # Signed boundary positions join at the car within one encoded unit.
       self.assertLessEqual(before[f"LANELINE_{old_side}_POSITION"] + after[f"LANELINE_{new_side}_POSITION"], 1)
       self.assertEqual(after[f"LANELINE_{new_side}_POSITION"], 0)
+      reveal = next(i for i in range(handoff, 220) if outputs[i][f"LANELINE_{new_side}"] == 6)
+      self.assertGreater(reveal, release)
+      self.assertEqual(outputs[reveal - 1][f"LANELINE_{new_side}_POSITION"], 11)
+      self.assertEqual(outputs[reveal][f"LANELINE_{new_side}_POSITION"], 12)
       for i in range(handoff, 220):
-        self.assertEqual(outputs[i][f"LANELINE_{new_side}"], 6)
+        self.assertEqual(outputs[i][f"LANELINE_{new_side}"], 1 if i < reveal else 6)
+        self.assertEqual(outputs[i][f"LANELINE_{old_side}"], 6)
         self.assertEqual(outputs[i]["LANE_HIGHLIGHT"], 1)
       # Releasing the old fill must not also move the new boundary.
       self.assertEqual(outputs[release - 1][f"LANELINE_{new_side}_POSITION"],
@@ -237,7 +245,7 @@ class TestCcncSourceTiming(unittest.TestCase):
           self.hud.rightLaneDepart = right_depart
           messages = self.display_messages(0, updated_161=True, updated_162=True)
           values = decode("CCNC_0x161", 0x161, messages[0][1].hex())
-          normal_left, normal_right = (2, 2) if phase == 0 else (6, 6)
+          normal_left, normal_right = (2, 2) if phase == 0 else (6, 1)
           self.assertEqual(values["LANELINE_LEFT"], 4 if left_depart else normal_left)
           self.assertEqual(values["LANELINE_RIGHT"], 4 if right_depart else normal_right)
           self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)

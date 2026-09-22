@@ -152,7 +152,7 @@ def ccnc_stopped_lane_handoff(frame):
   encoded_travel = round(travel)
   crossed = encoded_travel >= 15
   # Keep the old area until the continuous crossing: at 20 Hz this gives the new
-  # line and central fill two source frames to appear before the old fill clears.
+  # central fill two source frames to appear before the old fill clears.
   # The overlap is restricted to the zero-position handoff, not the return path.
   target_fill = moving and travel < 15.0
   central_fill = crossed and phase < blink_end
@@ -169,10 +169,16 @@ def ccnc_stopped_lane_handoff(frame):
 
   left_color = right_color = 6
   if moving and not crossed:
-    # Hide only the old boundary under the car. After rebinding, keep the new
-    # green boundary visible from position zero throughout the return path.
+    # Hide only the old boundary immediately under the car.
     left_color = 1 if left_position <= 2 else 6
     right_color = 1 if right_position <= 2 else 6
+  elif moving:
+    # Keep the fill and outer boundary while the car enters the new lane.
+    # Reveal the crossed boundary near the centered 15/15 pose, at position 12.
+    if left_change:
+      right_color = 1 if right_position < 12 else 6
+    else:
+      left_color = 1 if left_position < 12 else 6
 
   if phase < 40 or phase >= blink_end:
     left_color = right_color = 2
