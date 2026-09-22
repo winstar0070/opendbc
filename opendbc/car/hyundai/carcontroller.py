@@ -4,6 +4,7 @@ from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_avoidance
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
 from opendbc.car.interfaces import CarControllerBase
@@ -73,11 +74,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.car_fingerprint = CP.carFingerprint
     self.last_button_frame = 0
     self.cancel_counter = 0
-    self.ccnc_disp = {}  # B: display-only smoothing state for ccNC lane position
-    # ccNC HUD: lane-change state/direction injected by card.py from modelV2.meta.
-    # 0=off,1=preLaneChange,2=laneChangeStarting,3=laneChangeFinishing (log.LaneChangeState).
-    self.lane_change_state = 0
-    self.lane_change_direction = 0
+    self.ccnc_display = CcncLaneDisplay()
+    # Immutable, freshness-checked model sample injected by card.py for the HUD only.
+    self.ccnc_model = None
 
   def update(self, CC, CC_SP, CS, now_nanos):
     EsccCarController.update(self, CS)
@@ -219,11 +218,13 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     if ccnc_non_hda2:
       # Replay each blocked stock display frame on its source update to retain its cadence, counter, and phase.
       if CS.ccnc_0x161_updated or CS.ccnc_0x162_updated:
+        lane_values = None
+        if CS.ccnc_0x161_updated:
+          lane_values = self.ccnc_display.update(self.ccnc_model if self.lfa_icon else None)
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CC.leftBlinker,
                                                   CC.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
-                                                  disp_state=self.ccnc_disp, lane_change_state=self.lane_change_state,
-                                                  lane_change_direction=self.lane_change_direction))
+                                                  lane_values=lane_values))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

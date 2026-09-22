@@ -1,11 +1,11 @@
 import copy
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
 
 from opendbc.can import CANPacker, CANParser
 from opendbc.car.hyundai.carcontroller import CarController
 from opendbc.car.hyundai.hyundaicanfd import CanBus
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample
 from opendbc.car.hyundai.values import HyundaiFlags
 
 
@@ -74,9 +74,8 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.controller.lkas_icon = 0
     self.controller.lfa_icon = 2
     self.controller.last_button_frame = 0
-    self.controller.ccnc_disp = {}
-    self.controller.lane_change_state = 0
-    self.controller.lane_change_direction = 0
+    self.controller.ccnc_display = CcncLaneDisplay()
+    self.controller.ccnc_model = None
 
   def display_messages(self, frame, updated_161=False, updated_162=False):
     self.controller.frame = frame
@@ -95,160 +94,45 @@ class TestCcncSourceTiming(unittest.TestCase):
         self.assertEqual(self.display_messages(5), [])
         self.assertEqual([msg[0] for msg in self.display_messages(6, updated_161=True, updated_162=True)], [0x161, 0x162])
 
-  def test_stopped_transition_is_mirrored_and_hides_lines_before_rebinding(self):
+  def test_stationary_demo_is_removed(self):
     self.cs.out.vEgo = 0.0
     self.controller.lfa_icon = 0
-    self.hud.leftLaneVisible = self.hud.rightLaneVisible = False
-    outputs = []
-    for frame in range(1200):
-      self.cs.msg_161 = copy.copy(self.msg_161)
-      self.cs.msg_161["COUNTER"] = frame % 256
+    for frame in range(600):
       _, data, _ = self.display_messages(frame, updated_161=True)[0]
       values = decode("CCNC_0x161", 0x161, data.hex())
-      outputs.append(values)
-      with self.subTest(frame=frame):
-        self.assertEqual(values["COUNTER"], frame % 256)
-        self.assertEqual(values["LANELINE_LEFT_POSITION"] + values["LANELINE_RIGHT_POSITION"], 30)
-        self.assertEqual(values["CENTERLINE"], 0)
-        self.assertEqual(values["LANELINE_CURVATURE"], 15)
-        for side in ("LEFT", "RIGHT"):
-          if frame % 300 < 128 and values[f"LANELINE_{side}_POSITION"] <= 2:
-            self.assertEqual(values[f"LANELINE_{side}"], 1)
-        if values["LANELINE_LEFT"] == values["LANELINE_RIGHT"] == 6:
-          self.assertEqual(values["LANELINE_LEFT_POSITION"] + values["LANELINE_RIGHT_POSITION"], 30)
-        phase = frame % 300
-        moving = 40 <= phase < 220
-        self.assertEqual(values["LCA_LEFT_ARROW"], 2 if moving and (frame // 300) % 2 == 0 else 0)
-        self.assertEqual(values["LCA_RIGHT_ARROW"], 2 if moving and (frame // 300) % 2 == 1 else 0)
-        active = 40 <= phase < 280
-        self.assertEqual(values["LANE_LEFT"] + values["LANE_RIGHT"] + values["LANE_HIGHLIGHT"], int(active) + int(128 <= phase < 130))
-        self.assertEqual(values["LANE_HIGHLIGHT"], int(128 <= phase < 280))
-        self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if 128 <= phase < 280 else 0.0)
-        if moving:
-          self.assertIn(6, (values["LANELINE_LEFT"], values["LANELINE_RIGHT"]))
-        if 128 <= phase < 220:
-          new_side = "RIGHT" if (frame // 300) % 2 == 0 else "LEFT"
-          outer_side = "LEFT" if new_side == "RIGHT" else "RIGHT"
-          self.assertEqual(values[f"LANELINE_{outer_side}"], 6)
-          self.assertEqual(values[f"LANELINE_{new_side}"], 1 if values[f"LANELINE_{new_side}_POSITION"] < 12 else 6)
-        elif phase >= 220 or phase < 40:
-          color = 2 if phase < 40 or phase >= 280 else 6
-          if 240 <= phase < 280:
-            color = 2 if ((phase - 240) // 10) % 2 == 0 else 6
-          self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
-          self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (15, 15))
-    for frame in range(300):
-      for key in ("LANELINE_LEFT", "LANELINE_LEFT_POSITION", "LANE_LEFT", "LCA_LEFT_ARROW"):
-        self.assertEqual(outputs[frame][key], outputs[frame + 300][key.replace("LEFT", "RIGHT")])
-      for key in outputs[frame]:
-        if key not in ("COUNTER", "CHECKSUM"):
-          self.assertEqual(outputs[frame][key], outputs[frame + 600][key])
+      self.assertEqual((values["LFA_ICON"], values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (0, 0, 0))
+      self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 0))
 
-    # Both directions travel through a complete lane, then keep travelling in
-    # the same direction after rebinding instead of snapping back to 15/15.
-    for start in (0, 300):
-      side = "LEFT" if start == 0 else "RIGHT"
-      positions = [outputs[i][f"LANELINE_{side}_POSITION"] for i in range(start + 40, start + 220)]
-      self.assertEqual((min(positions), max(positions)), (1, 30))
-      travel = 0
-      wraps = 0
-      for i in range(start + 41, start + 220):
-        before, after = outputs[i - 1], outputs[i]
-        delta = after[f"LANELINE_{side}_POSITION"] - before[f"LANELINE_{side}_POSITION"]
-        if delta > 15:
-          wraps += 1
-          delta -= 30
-          for values in (before, after):
-            self.assertIn(6, (values["LANELINE_LEFT"], values["LANELINE_RIGHT"]))
-            self.assertTrue(values["LANE_LEFT"] or values["LANE_RIGHT"] or values["LANE_HIGHLIGHT"])
-        self.assertIn(delta, (-1, 0))
-        travel -= delta
-      self.assertEqual(wraps, 1)
-      self.assertEqual(travel, 30)
-
-  def test_fill_handoff_keeps_inner_boundary_hidden_until_near_center(self):
-    self.cs.out.vEgo = 0.0
-    for start, old_side, new_side in ((0, "LEFT", "RIGHT"), (300, "RIGHT", "LEFT")):
-      outputs = []
-      for phase in range(300):
-        self.controller.ccnc_disp["green_test_frame"] = start + phase
-        _, data, _ = self.display_messages(phase, updated_161=True)[0]
-        outputs.append(decode("CCNC_0x161", 0x161, data.hex()))
-      handoff = next(i for i, v in enumerate(outputs) if v["LANE_HIGHLIGHT"])
-      release = next(i for i in range(handoff, 300) if not outputs[i][f"LANE_{old_side}"])
-      self.assertLess(handoff, release)
-      self.assertLessEqual(release - handoff, 2)
-      before, after = outputs[handoff - 1], outputs[handoff]
-      # Signed boundary positions join at the car within one encoded unit.
-      self.assertLessEqual(before[f"LANELINE_{old_side}_POSITION"] + after[f"LANELINE_{new_side}_POSITION"], 1)
-      self.assertEqual(after[f"LANELINE_{new_side}_POSITION"], 0)
-      reveal = next(i for i in range(handoff, 220) if outputs[i][f"LANELINE_{new_side}"] == 6)
-      self.assertGreater(reveal, release)
-      self.assertEqual(outputs[reveal - 1][f"LANELINE_{new_side}_POSITION"], 11)
-      self.assertEqual(outputs[reveal][f"LANELINE_{new_side}_POSITION"], 12)
-      for i in range(handoff, 220):
-        self.assertEqual(outputs[i][f"LANELINE_{new_side}"], 1 if i < reveal else 6)
-        self.assertEqual(outputs[i][f"LANELINE_{old_side}"], 6)
-        self.assertEqual(outputs[i]["LANE_HIGHLIGHT"], 1)
-      # Releasing the old fill must not also move the new boundary.
-      self.assertEqual(outputs[release - 1][f"LANELINE_{new_side}_POSITION"],
-                       outputs[release][f"LANELINE_{new_side}_POSITION"])
-      self.assertTrue(all(v[f"LANE_{old_side}"] == 0 for v in outputs[release:]))
-
-  def test_stopped_animation_only_advances_on_source_161(self):
-    self.cs.out.vEgo = 0.0
-    for frame in range(80):
-      self.display_messages(frame, updated_161=True)
-    state = copy.deepcopy(self.controller.ccnc_disp)
-    for frame in range(80, 90):
-      self.assertEqual([m[0] for m in self.display_messages(frame, updated_162=True)], [0x162])
-    self.assertEqual(self.controller.ccnc_disp, state)
-
-  def test_stopped_animation_restarts_after_moving(self):
-    self.cs.out.vEgo = 0.0
-    for frame in range(100):
-      self.display_messages(frame, updated_161=True)
-    self.cs.out.vEgo = 0.1
-    self.display_messages(100, updated_162=True)
-    self.cs.out.vEgo = 0.0
-    _, data, _ = self.display_messages(101, updated_161=True)[0]
+  def test_model_geometry_and_stock_fallback(self):
+    self.controller.ccnc_model = LaneModelSample(1.0, (-4.8, -1.2, 2.4, 6.0), 0, 0)
+    _, data, _ = self.display_messages(0, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
-    self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (15, 15))
-    self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"], values["LANE_HIGHLIGHT"]), (0, 0, 0))
-
-  def test_green_line_test_stops_when_vehicle_moves(self):
-    self.controller.lfa_icon = 0
-    for frame, (speed, color) in enumerate(((0.099, 2), (0.1, 0), (1.0, 0), (20.0, 0), (0.0, 2))):
-      with self.subTest(speed=speed):
-        self.cs.out.vEgo = speed
-        _, data, _ = self.display_messages(frame, updated_161=True)[0]
-        values = decode("CCNC_0x161", 0x161, data.hex())
-        self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
-        self.assertEqual(values["LANE_HIGHLIGHT"], 0)
-        self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 0.0)
-
-  def test_green_line_test_can_be_disabled(self):
-    self.cs.out.vEgo = 0.0
-    self.controller.lfa_icon = 0
-    with patch("opendbc.car.hyundai.hyundaicanfd.CCNC_DEV_STOPPED_GREEN_LANES_TEST", False):
-      _, data, _ = self.display_messages(0, updated_161=True)[0]
+    self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (10, 20))
+    self.assertEqual(values["LANELINE_CURVATURE"], self.msg_161["LANELINE_CURVATURE"])
+    self.controller.ccnc_model = None
+    self.cs.msg_161 = copy.copy(self.msg_161)
+    _, data, _ = self.display_messages(1, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
-    self.assertEqual((values["LFA_ICON"], values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (0, 0, 0))
+    for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANELINE_LEFT", "LANE_HIGHLIGHT"):
+      self.assertEqual(values[key], self.msg_161[key])
 
-  def test_green_line_test_preserves_departure_warnings(self):
-    self.cs.out.vEgo = 0.0
-    for phase in (0, 130):
-      for left_depart, right_depart in ((True, False), (False, True), (True, True)):
-        with self.subTest(phase=phase, left=left_depart, right=right_depart):
-          self.controller.ccnc_disp["green_test_frame"] = phase
-          self.hud.leftLaneDepart = left_depart
-          self.hud.rightLaneDepart = right_depart
-          messages = self.display_messages(0, updated_161=True, updated_162=True)
-          values = decode("CCNC_0x161", 0x161, messages[0][1].hex())
-          normal_left, normal_right = (2, 2) if phase == 0 else (6, 1)
-          self.assertEqual(values["LANELINE_LEFT"], 4 if left_depart else normal_left)
-          self.assertEqual(values["LANELINE_RIGHT"], 4 if right_depart else normal_right)
-          self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
+  def test_source_162_does_not_advance_model_display(self):
+    self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    self.display_messages(0, updated_161=True)
+    state = copy.deepcopy(vars(self.controller.ccnc_display))
+    self.controller.ccnc_model = LaneModelSample(1.05, (-5.0, -1.4, 2.2, 5.8), 2, 1)
+    self.display_messages(1, updated_162=True)
+    self.assertEqual(vars(self.controller.ccnc_display), state)
+
+  def test_model_display_preserves_departure_warnings_and_arrows(self):
+    self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    self.hud.leftLaneDepart = self.hud.rightLaneDepart = True
+    self.cc.leftBlinker = True
+    messages = self.display_messages(0, updated_161=True, updated_162=True)
+    values = decode("CCNC_0x161", 0x161, messages[0][1].hex())
+    self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (4, 4))
+    self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (2, 0))
+    self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
 
   def test_preserves_stock_phase_and_source_counters(self):
     expected = [(0, 0x161, 10), (2, 0x162, 40), (5, 0x161, 11), (7, 0x162, 41)]
