@@ -153,6 +153,8 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.cc.leftBlinker = True
     cases = [
       (0, 1, True, True, False, 20.0),
+      (0, 2, True, False, True, 20.0),
+      (1, 2, True, False, True, 20.0),
       (1, 1, True, True, False, 20.0),
       (2, 1, True, False, False, 20.0),
       (2, 1, True, False, True, 20.0),
@@ -175,7 +177,26 @@ class TestCcncSourceTiming(unittest.TestCase):
           values = decode("CCNC_0x161", 0x161, data.hex())
           for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANE_LEFT", "LANE_RIGHT", "LANE_HIGHLIGHT"):
             self.assertEqual(values[key], self.msg_161[key])
-          self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (2 if left else 0, 2 if right else 0))
+          self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (0, 0))
+
+  def test_arrows_clear_when_confirmed_change_becomes_turn_or_hazards(self):
+    self.cc.latActive = True
+    for direction in (1, 2):
+      for hazards in (False, True):
+        with self.subTest(direction=direction, hazards=hazards):
+          self.controller.ccnc_display.reset()
+          for frame in range(2):
+            self.cs.msg_161 = copy.copy(self.msg_161)
+            self.cs.out.leftBlinker = direction == 1 or (frame == 1 and hazards)
+            self.cs.out.rightBlinker = direction == 2 or (frame == 1 and hazards)
+            state = 2 if frame == 0 or hazards else 0
+            self.controller.ccnc_model = LaneModelSample(frame * .05, (-5.4, -1.8, 1.8, 5.4), state, direction, edges=(-9.0, 9.0))
+            _, data, _ = self.display_messages(frame, updated_161=True)[0]
+            values = decode("CCNC_0x161", 0x161, data.hex())
+            expected = (2 if direction == 1 else 0, 2 if direction == 2 else 0) if frame == 0 else (0, 0)
+            self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), expected)
+            if frame == 1:
+              self.assertEqual((values["LCA_LEFT_ICON"], values["LCA_RIGHT_ICON"]), (4, 4))
 
   def test_road_edge_blocks_right_turn_display_despite_model_change_state(self):
     self.cc.latActive = True
@@ -187,6 +208,8 @@ class TestCcncSourceTiming(unittest.TestCase):
       values = decode("CCNC_0x161", 0x161, data.hex())
       for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANE_RIGHT", "LANE_HIGHLIGHT"):
         self.assertEqual(values[key], self.msg_161[key])
+
+      self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (0, 0))
 
   def test_camera_cross_check_uses_decoded_positions_and_timestamps(self):
     parser = CANParser(DBC, [("FR_CMR_03_50ms", 20), ("CCNC_0x161", 20)], 2)
