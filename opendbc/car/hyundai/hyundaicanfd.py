@@ -152,23 +152,40 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # it never overlays the real lane display while driving.
   CCNC_DEV_STOPPED_LANECHANGE_TEST = True
   CCNC_DEV_TEST_MAX_SPEED = 2.0  # m/s (~7 km/h); above this the test is off
+  # EXPERIMENT: sweep LANE_HIGHLIGHT (colour) + LANE_HIGHLIGHT_DISTANCE (length/pos)
+  # while parked, to learn whether the highlight can be MOVED left<->right or grown
+  # (which LANE_LEFT/RIGHT cannot do). Overrides those two fields at the very end.
+  CCNC_DEV_HIGHLIGHT_SWEEP = True
+  _hl_color = None
+  _hl_distance = 0
   if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
     lfa_icon = 2
     send_161 = True
     _cnt = int(msg_161["COUNTER"])
-    _stage = (_cnt // 120) % 8   # 8 stages, ~6s each at ~20Hz (holds the ~5s slide + margin)
-    # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
-    if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
-      lane_change_state = 2 if _stage == 1 else 3
+    if CCNC_DEV_HIGHLIGHT_SWEEP:
+      # Cycle colour every ~8s over the 6 defined values, and within each, sweep
+      # DISTANCE 0 -> 204.7m in 4 steps of ~2s so we can watch it grow/move.
+      _hl_color = (_cnt // 160) % 6              # 0 HIDDEN,1 GREEN,2 WHITE,3 BLUE,4 ORANGE,5 RED
+      _hl_step = (_cnt // 40) % 4                # 4 distance steps, ~2s each
+      _hl_distance = int(_hl_step * 2047 / 3)    # 0 .. 2047 (raw; *0.1 = metres)
+      # keep a left change context so any lane geometry is present too
+      lane_change_state = 2
       lane_change_direction = 1
-      left_blinker, right_blinker = True, False   # show left arrow
-    elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
-      lane_change_state = 2 if _stage == 5 else 3
-      lane_change_direction = 2
-      left_blinker, right_blinker = False, True   # show right arrow
+      left_blinker, right_blinker = True, False
     else:
-      lane_change_state, lane_change_direction = 0, 0
-      left_blinker, right_blinker = False, False
+      _stage = (_cnt // 120) % 8   # 8 stages, ~6s each at ~20Hz (holds the ~5s slide + margin)
+      # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
+      if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
+        lane_change_state = 2 if _stage == 1 else 3
+        lane_change_direction = 1
+        left_blinker, right_blinker = True, False   # show left arrow
+      elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
+        lane_change_state = 2 if _stage == 5 else 3
+        lane_change_direction = 2
+        left_blinker, right_blinker = False, True   # show right arrow
+      else:
+        lane_change_state, lane_change_direction = 0, 0
+        left_blinker, right_blinker = False, False
 
   any_blinker = left_blinker or right_blinker
   curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
@@ -333,6 +350,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       right_lane = int(round(min(30.0, max(0.0, LANE_POS_CENTER - shift))))
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
+    # TEMP-DEV highlight sweep override (REVERT): force LANE_HIGHLIGHT colour +
+    # distance so we can see if the highlight can be positioned/grown on-cluster.
+    if _hl_color is not None:
+      msg_161["LANE_HIGHLIGHT"] = _hl_color
+      msg_161["LANE_HIGHLIGHT_DISTANCE"] = _hl_distance
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
 
