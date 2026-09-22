@@ -131,6 +131,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
                 lane_change_state=0, lane_change_direction=0):
   for f in {"FAULT_LSS", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW", "FAULT_ESS"}:
     msg_162[f] = 0
+
   if msg_161["ALERTS_2"] == 5:
     msg_161.update({"ALERTS_2": 0, "SOUNDS_2": 0})
   if msg_161["ALERTS_3"] == 17:
@@ -142,254 +143,393 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
 
-  # TEMP-DEV (REVERT BEFORE VEHICLE USE): stopped-only lane-change animation test,
-  # AUTOMATIC (no blinker needed). This car has no factory auto-lane-change, so
-  # while parked we synthesize lane_change_state on a timer and auto-cycle:
-  #   off -> LEFT(starting,finishing) -> off -> RIGHT(starting,finishing) -> off
-  # driven by the stock 0x161 COUNTER. Forces lfa_icon + send_161.
-  # Display (HUD) only; no steering/control effect. REVERT before vehicle use.
-  # Only active while essentially parked; auto-disables once the car is moving so
-  # it never overlays the real lane display while driving.
+  # ---------------------------------------------------------------------------
+  # TEMP DEV TEST
+  # Parked/stopped only:
+  #   OFF -> LEFT -> OFF -> RIGHT -> OFF
+  # ---------------------------------------------------------------------------
   CCNC_DEV_STOPPED_LANECHANGE_TEST = True
-  CCNC_DEV_TEST_MAX_SPEED = 2.0  # m/s (~7 km/h); above this the test is off
-  # EXPERIMENT: sweep LANE_HIGHLIGHT (colour) + LANE_HIGHLIGHT_DISTANCE (length/pos)
-  # while parked, to learn whether the highlight can be MOVED left<->right or grown
-  # (which LANE_LEFT/RIGHT cannot do). Overrides those two fields at the very end.
-  CCNC_DEV_HIGHLIGHT_SWEEP = True
-  _hl_color = None
-  _hl_distance = 0
+  CCNC_DEV_TEST_MAX_SPEED = 2.0
+
   if CCNC_DEV_STOPPED_LANECHANGE_TEST and out.vEgo < CCNC_DEV_TEST_MAX_SPEED:
     lfa_icon = 2
     send_161 = True
+
     _cnt = int(msg_161["COUNTER"])
-    if CCNC_DEV_HIGHLIGHT_SWEEP:
-      # Cycle colour every ~8s over the 6 defined values, and within each, sweep
-      # DISTANCE 0 -> 204.7m in 4 steps of ~2s so we can watch it grow/move.
-      _hl_color = (_cnt // 160) % 6              # 0 HIDDEN,1 GREEN,2 WHITE,3 BLUE,4 ORANGE,5 RED
-      _hl_step = (_cnt // 40) % 4                # 4 distance steps, ~2s each
-      _hl_distance = int(_hl_step * 2047 / 3)    # 0 .. 2047 (raw; *0.1 = metres)
-      # keep a left change context so any lane geometry is present too
-      lane_change_state = 2
+    _stage = (_cnt // 120) % 8
+
+    if _stage in (1, 2):
+      lane_change_state = 2 if _stage == 1 else 3
       lane_change_direction = 1
       left_blinker, right_blinker = True, False
+
+    elif _stage in (5, 6):
+      lane_change_state = 2 if _stage == 5 else 3
+      lane_change_direction = 2
+      left_blinker, right_blinker = False, True
+
     else:
-      _stage = (_cnt // 120) % 8   # 8 stages, ~6s each at ~20Hz (holds the ~5s slide + margin)
-      # 0 off, 1 L-start, 2 L-finish, 3 off, 4 off, 5 R-start, 6 R-finish, 7 off
-      if _stage in (1, 2):        # LEFT: starting(2), finishing(3)
-        lane_change_state = 2 if _stage == 1 else 3
-        lane_change_direction = 1
-        left_blinker, right_blinker = True, False   # show left arrow
-      elif _stage in (5, 6):      # RIGHT: starting(2), finishing(3)
-        lane_change_state = 2 if _stage == 5 else 3
-        lane_change_direction = 2
-        left_blinker, right_blinker = False, True   # show right arrow
-      else:
-        lane_change_state, lane_change_direction = 0, 0
-        left_blinker, right_blinker = False, False
+      lane_change_state = 0
+      lane_change_direction = 0
+      left_blinker, right_blinker = False, False
 
   any_blinker = left_blinker or right_blinker
-  curvature = {i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i for i in range(-15, 16)}
 
-  # Green-fill direction: held while the lane-change animation is active OR easing
-  # Green BACKGROUND fill (LANE_LEFT/RIGHT = the coloured area inside the lane, not
-  # the lines). User's model: the green starts on the TARGET side and fills toward
-  # CENTER as the change progresses, so by completion the car sits in the middle
-  # of the green. LANE_* has no position, only left/right half on/off -- so we
-  # approximate "left -> center" as: target half first, then BOTH halves once the
-  # slide passes FILL_PROG (green has reached center), and both when landed.
-  FILL_PROG = 0.5   # past this the green has filled to center -> light both halves
-  _fill_left = False
-  _fill_right = False
+  curvature = {
+    i: (31 if i == -1 else 13 - abs(i + 15)) if i < 0 else 15 + i
+    for i in range(-15, 16)
+  }
+
+  # ---------------------------------------------------------------------------
+  # Lane change HUD animation
+  #
+  # CHANGING:
+  #   - target side LANE_LEFT or LANE_RIGHT only
+  #   - lane pair slides sideways
+  #
+  # LANDED_FILL:
+  #   - side LANE_* goes OFF
+  #   - LANE_HIGHLIGHT becomes GREEN
+  #   - CENTERLINE hidden
+  #   - lane pair smoothly recenters
+  #
+  # LANDED_LINES:
+  #   - central fill goes OFF
+  #   - left/right lane lines stay GREEN briefly
+  #
+  # DONE:
+  #   - normal white lane
+  # ---------------------------------------------------------------------------
+  PROG_STEP = 0.01              # ~5 sec at 20 Hz
+  LAND_FILL_FRAMES = 30         # ~1.5 sec central green fill
+  LAND_LINE_FRAMES = 20         # ~1.0 sec green lane lines
+  LAND_TOTAL_FRAMES = LAND_FILL_FRAMES + LAND_LINE_FRAMES
+
+  # Physical metres, not 0..2047 raw.
+  LANE_HIGHLIGHT_DISTANCE = 60.0
+
+  changing = lane_change_state in (2, 3)
+
+  if changing and lane_change_direction in (1, 2):
+    cur_dir = lane_change_direction
+  else:
+    cur_dir = 0
+
   if disp_state is not None:
-    _lc_landed = disp_state.get("lc_landed", False)
-    _lc_prog = disp_state.get("lc_prog", 0.0)
-    _lc_dir = disp_state.get("lc_dir", 0)
-    _changing = (_lc_prog > 0.0 or _lc_dir)
-    if _lc_landed and _lc_dir:
-      _fill_left = _fill_right = True             # complete: green centered
-    elif _changing:
-      _reached_center = _lc_prog >= FILL_PROG
-      if _lc_dir == 1:                            # left change
-        _fill_left = True
-        _fill_right = _reached_center             # fills to center in 2nd half
-      elif _lc_dir == 2:                          # right change
-        _fill_right = True
-        _fill_left = _reached_center
-  elif lane_change_state in (2, 3):
-    if lane_change_direction == 1:
-      _fill_left = True
-    elif lane_change_direction == 2:
-      _fill_right = True
+    prog = disp_state.get("lc_prog", 0.0)
+    held_dir = disp_state.get("lc_dir", 0)
+    landed_frames = disp_state.get("lc_landed_frames", 0)
+    done = disp_state.get("lc_done", False)
 
-  # Lane-line visibility/colour rule (simple):
-  #   normal      -> WHITE (2)
-  #   CHANGING    -> BOTH lines HIDDEN (1). Once the green is up we hide the lines
-  #                  entirely; the green background carries the motion.
-  #   LANDED      -> BOTH lines RETURN and blink WHITE<->GREEN (~1s) as the
-  #                  "change complete" cue, then settle to white.
-  # 0x161 ~20 Hz -> (COUNTER // 20) % 2 toggles ~1 Hz.
-  _landed_now = disp_state is not None and disp_state.get("lc_landed", False)
-  _blink_phase_green = (int(msg_161["COUNTER"]) // 20) % 2 == 0
-  _prev_prog = disp_state.get("lc_prog", 0.0) if disp_state is not None else 0.0
-  _prev_dir = disp_state.get("lc_dir", 0) if disp_state is not None else 0
-  _changing_now = (_prev_prog > 0.0 or _prev_dir) and not _landed_now
+    if send_161:
+      if changing:
+        if cur_dir in (1, 2):
+          held_dir = cur_dir
 
+        if not done:
+          if landed_frames > 0:
+            # Already reached target lane:
+            # central highlight -> green lane lines -> done.
+            landed_frames += 1
+
+            if landed_frames > LAND_TOTAL_FRAMES:
+              landed_frames = 0
+              done = True
+
+          else:
+            # Slide target lane toward the ego position.
+            prog = min(1.0, prog + PROG_STEP)
+
+            if prog >= 1.0:
+              prog = 1.0
+              landed_frames = 1
+
+      else:
+        # Lane-change state ended. Reset animation for the next change.
+        prog = 0.0
+        held_dir = 0
+        landed_frames = 0
+        done = False
+
+      disp_state["lc_prog"] = prog
+      disp_state["lc_dir"] = held_dir
+      disp_state["lc_landed_frames"] = landed_frames
+      disp_state["lc_done"] = done
+
+  else:
+    # Fallback when no persistent display state is supplied.
+    held_dir = cur_dir
+    done = False
+
+    if lane_change_state == 2:
+      prog = 0.5
+      landed_frames = 0
+    elif lane_change_state == 3:
+      prog = 1.0
+      landed_frames = 1
+    else:
+      prog = 0.0
+      landed_frames = 0
+
+  landing_fill = 0 < landed_frames <= LAND_FILL_FRAMES
+  landing_lines = LAND_FILL_FRAMES < landed_frames <= LAND_TOTAL_FRAMES
+
+  changing_visual = (
+    changing
+    and held_dir in (1, 2)
+    and landed_frames == 0
+    and not done
+  )
+
+  # ---------------------------------------------------------------------------
+  # Target-side green area
+  #
+  # IMPORTANT:
+  # LANE_LEFT + LANE_RIGHT are NEVER used together to fake the ego lane.
+  # ---------------------------------------------------------------------------
+  fill_left = changing_visual and held_dir == 1
+  fill_right = changing_visual and held_dir == 2
+
+  # Central ego-lane fill after crossing.
+  lane_highlight = 1 if (lfa_icon and landing_fill) else 0
+  lane_highlight_distance = LANE_HIGHLIGHT_DISTANCE if lane_highlight else 0.0
+
+  # Do not leave the middle CENTERLINE through the green lane.
+  lane_anim_active = changing_visual or landing_fill or landing_lines
+  centerline = 0 if lane_anim_active else (1 if lfa_icon else 0)
+
+  # ---------------------------------------------------------------------------
+  # Lane line colours
+  # ---------------------------------------------------------------------------
   def _laneline_color(visible, depart):
     if not lfa_icon:
       return 0
-    if not visible:
-      return 1
+
     if depart:
       return 4
-    if _changing_now:
-      return 1                                 # HIDDEN while the green is sliding
-    if _landed_now:
-      return 6 if _blink_phase_green else 2   # returned + white<->green blink
-    return 2                                   # normal white
+
+    # While crossing, green area is the main visual.
+    if changing_visual:
+      return 1  # hidden
+
+    # Target reached:
+    # show green borders during central fill and for a short period afterwards.
+    if landing_fill or landing_lines:
+      return 6  # green
+
+    if not visible:
+      return 1
+
+    return 2  # white
 
   msg_161.update({
     "DAW_ICON": 0,
     "LKA_ICON": 0,
     "LFA_ICON": 2 if lfa_icon else 0,
-    "CENTERLINE": 1 if lfa_icon else 0,
-    "LANELINE_CURVATURE": curvature[max(-15, min(int(out.steeringAngleDeg / 4.5), 15))] if lfa_icon and not any_blinker else 15,
-    "LANELINE_LEFT": _laneline_color(hud.leftLaneVisible, hud.leftLaneDepart),
-    "LANELINE_RIGHT": _laneline_color(hud.rightLaneVisible, hud.rightLaneDepart),
-    "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.leftBlindspot else 2 if any_blinker else 4),
-    "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN else 1 if out.rightBlindspot else 2 if any_blinker else 4),
+
+    "CENTERLINE": centerline,
+
+    "LANELINE_CURVATURE": (
+      curvature[max(-15, min(int(out.steeringAngleDeg / 4.5), 15))]
+      if lfa_icon and not any_blinker else 15
+    ),
+
+    "LANELINE_LEFT": _laneline_color(
+      hud.leftLaneVisible,
+      hud.leftLaneDepart,
+    ),
+
+    "LANELINE_RIGHT": _laneline_color(
+      hud.rightLaneVisible,
+      hud.rightLaneDepart,
+    ),
+
+    "LCA_LEFT_ICON": (
+      0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN
+      else 1 if out.leftBlindspot
+      else 2 if any_blinker
+      else 4
+    ),
+
+    "LCA_RIGHT_ICON": (
+      0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN
+      else 1 if out.rightBlindspot
+      else 2 if any_blinker
+      else 4
+    ),
+
     "LCA_LEFT_ARROW": 2 if left_blinker else 0,
     "LCA_RIGHT_ARROW": 2 if right_blinker else 0,
-    # Green background fill: target side first, then both halves as it reaches
-    # center (see _fill_left/_fill_right), so the green slides from the target
-    # side into the middle where the car sits.
-    "LANE_LEFT": 1 if (lfa_icon and _fill_left) else 0,
-    "LANE_RIGHT": 1 if (lfa_icon and _fill_right) else 0,
+
+    # Adjacent/target lane only.
+    "LANE_LEFT": 1 if (lfa_icon and fill_left) else 0,
+    "LANE_RIGHT": 1 if (lfa_icon and fill_right) else 0,
+
+    # Ego/central lane highlight.
+    "LANE_HIGHLIGHT": lane_highlight,
+    "LANE_HIGHLIGHT_DISTANCE": lane_highlight_distance,
   })
 
-  # Lane-change lane animation (car icon stays centered; the LANES move).
-  # Driven purely by the plumbed lane-change state -- this car has no factory
-  # auto-lane-change, so there is no stock source geometry to follow.
-  #   left change:  push lanes RIGHT, green fills the LEFT lane.
-  #   right change: push lanes LEFT,  green fills the RIGHT lane.
-  # Keep pushing for the WHOLE change (starting(2) AND finishing(3)) so the green
-  # target lane reaches center; on the change ending (off) snap-reset so the green
-  # lane reads as the new ego lane. LANE_POS_SIGN flips the on-screen direction if
-  # the cluster maps position the opposite way (confirm on-vehicle).
-  # LANELINE_LEFT_POSITION is 6-bit (0..63); we keep left+right centered on 30.
+  # ---------------------------------------------------------------------------
+  # Lane geometry
+  #
+  # Car stays visually centered.
+  #
+  # During crossing:
+  #   lane pair moves sideways.
+  #
+  # After target reached:
+  #   smoothly recenter while LANE_HIGHLIGHT is active.
+  # ---------------------------------------------------------------------------
   if lfa_icon:
-    # Linear-progress animation so the slide REACHES the edge (not just approaches
-    # it) and the recenter is smooth instead of a hard snap.
-    #   prog 0..1 ramps UP while changing (green target lane slides to center),
-    #   then ramps DOWN to 0 after the change ends (the green lane, now centered,
-    #   eases back to the neutral ego view). Position = 15 + dir_sign * prog * 15,
-    #   so prog=1 hits the edge (0 or 30) exactly.
-    PROG_STEP = 0.01         # per-0x161-frame ramp; 100 frames (~5s) end to end (a lane change takes ~5s)
-    changing = lane_change_state in (2, 3)
-    # direction of travel: left(1) or right(2); hold last direction while easing out
-    if changing and lane_change_direction in (1, 2):
-      cur_dir = lane_change_direction
-    else:
-      cur_dir = 0
-
-    if disp_state is not None:
-      if send_161:
-        prog = disp_state.get("lc_prog", 0.0)
-        held_dir = disp_state.get("lc_dir", 0)
-        landed = disp_state.get("lc_landed", False)
-        if changing and not landed:
-          held_dir = cur_dir
-          prog = min(1.0, prog + PROG_STEP)      # slide toward the target lane
-          if prog >= 1.0:
-            # reached the target lane -> LAND: the green lane becomes the ego lane.
-            # Solidify (green off) and treat this spot as the new center; do NOT
-            # glide back, which would look like returning instead of crossing.
-            landed = True
-        if not changing:
-          # change ended -> settled on the new lane; clear for the next change.
-          prog = 0.0
-          held_dir = 0
-          landed = False
-        disp_state["lc_prog"] = prog
-        disp_state["lc_dir"] = held_dir
-        disp_state["lc_landed"] = landed
-      else:
-        prog = disp_state.get("lc_prog", 0.0)
-        held_dir = disp_state.get("lc_dir", 0)
-        landed = disp_state.get("lc_landed", False)
-    else:
-      prog = 1.0 if changing else 0.0
-      held_dir = cur_dir
-      landed = False
-
-    # held_dir: 1=left change (target lane is on the LEFT), 2=right change.
-    # Rest pose = 15/15. During a change we SHIFT the lane pair to one side while
-    # keeping the sum on 30 (constant width) -- an asymmetric slide, not a spread:
-    # one line moves toward center, the other away by the same amount, so the pair
-    # rides sideways (the crossing) without the lanes widening or leaving the
-    # screen. BIAS caps how far it shifts so the inner line never reaches the car
-    # center (0) and the outer line never rides off-screen (30) -- both of those
-    # extremes left the car with no lane around it on-vehicle.
-    # On LANDING we return to 15/15: the crossed-into lane is now the ego lane and
-    # must wrap the car at normal width (holding the shifted pose left the car with
-    # one line under it and the other off-screen). Green->white blink marks it.
-    # LANE_POS_SIGN sets which screen side a left/right change shifts toward
-    # (re-verify with a frame sim whenever this mapping changes).
     LANE_POS_CENTER = 15.0
-    LANE_POS_BIAS = 12.0     # max shift; inner->3, outer->27 at full push
-    LANE_POS_SIGN = -1       # (user did not ask to flip; restored to -1)
-    if landed:
-      # crossed-into lane becomes the ego lane: normal-width pair around the car.
-      left_lane = 15
-      right_lane = 15
+    LANE_POS_BIAS = 12.0
+    LANE_POS_SIGN = -1
+
+    dir_sign = (
+      1.0 if held_dir == 1
+      else -1.0 if held_dir == 2
+      else 0.0
+    )
+
+    if changing_visual:
+      shift = (
+        LANE_POS_SIGN
+        * dir_sign
+        * prog
+        * LANE_POS_BIAS
+      )
+
+    elif landing_fill and held_dir in (1, 2):
+      # At the instant of crossing we are at full shift.
+      # Bring the new ego lane smoothly back to screen center while
+      # the central green highlight is displayed.
+      settle = min(
+        1.0,
+        landed_frames / float(LAND_FILL_FRAMES),
+      )
+
+      shift = (
+        LANE_POS_SIGN
+        * dir_sign
+        * LANE_POS_BIAS
+        * (1.0 - settle)
+      )
+
     else:
-      dir_sign = 1.0 if held_dir == 1 else -1.0 if held_dir == 2 else 0.0
-      shift = LANE_POS_SIGN * dir_sign * prog * LANE_POS_BIAS
-      # left line moves by +shift, right by -shift: sum stays 30 (width constant),
-      # the pair slides toward one side.
-      left_lane = int(round(min(30.0, max(0.0, LANE_POS_CENTER + shift))))
-      right_lane = int(round(min(30.0, max(0.0, LANE_POS_CENTER - shift))))
+      shift = 0.0
+
+    left_lane = int(round(
+      min(
+        30.0,
+        max(
+          0.0,
+          LANE_POS_CENTER + shift,
+        ),
+      )
+    ))
+
+    right_lane = int(round(
+      min(
+        30.0,
+        max(
+          0.0,
+          LANE_POS_CENTER - shift,
+        ),
+      )
+    ))
+
     msg_161["LANELINE_LEFT_POSITION"] = left_lane
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
-    # TEMP-DEV highlight sweep override (REVERT): force LANE_HIGHLIGHT colour +
-    # distance so we can see if the highlight can be positioned/grown on-cluster.
-    if _hl_color is not None:
-      msg_161["LANE_HIGHLIGHT"] = _hl_color
-      msg_161["LANE_HIGHLIGHT_DISTANCE"] = _hl_distance
+
   if hud.leftLaneDepart or hud.rightLaneDepart:
     msg_162["VIBRATE"] = 1
 
   if openpilot_longitudinal_control:
     if msg_161["ALERTS_3"] in (1, 2, 3, 4, 7, 8, 9, 10):
       msg_161["ALERTS_3"] = 0
+
     if msg_161["ALERTS_5"] == 4:
       msg_161["ALERTS_5"] = 0
+
     if msg_161["SOUNDS_3"] == 5:
       msg_161["SOUNDS_3"] = 0
 
     msg_161.update({
       "SETSPEED": 3 if enabled else 1,
-      "SETSPEED_HUD": 0 if not main_cruise_enabled else 2 if enabled else 1,
-      "SETSPEED_SPEED": (
-        255 if not main_cruise_enabled else
-        (40 if is_metric else 25) if (s := round(out.vCruiseCluster * (1 if is_metric else CV.KPH_TO_MPH))) > (145 if is_metric else 90) else s
+
+      "SETSPEED_HUD": (
+        0 if not main_cruise_enabled
+        else 2 if enabled
+        else 1
       ),
+
+      "SETSPEED_SPEED": (
+        255 if not main_cruise_enabled
+        else (40 if is_metric else 25)
+        if (
+          s := round(
+            out.vCruiseCluster
+            * (1 if is_metric else CV.KPH_TO_MPH)
+          )
+        ) > (145 if is_metric else 90)
+        else s
+      ),
+
       "DISTANCE": hud.leadDistanceBars,
-      "DISTANCE_SPACING": 0 if not main_cruise_enabled else 1 if enabled else 3,
-      "DISTANCE_LEAD": 0 if not main_cruise_enabled else 2 if enabled and hud.leadVisible else 1 if hud.leadVisible else 0,
-      "DISTANCE_CAR": 0 if not main_cruise_enabled else 2 if enabled else 1,
+
+      "DISTANCE_SPACING": (
+        0 if not main_cruise_enabled
+        else 1 if enabled
+        else 3
+      ),
+
+      "DISTANCE_LEAD": (
+        0 if not main_cruise_enabled
+        else 2 if enabled and hud.leadVisible
+        else 1 if hud.leadVisible
+        else 0
+      ),
+
+      "DISTANCE_CAR": (
+        0 if not main_cruise_enabled
+        else 2 if enabled
+        else 1
+      ),
+
       "SLA_ICON": 0,
       "NAV_ICON": 0,
       "TARGET": 0,
     })
 
-    msg_162["LEAD"] = 0 if not main_cruise_enabled else 2 if enabled else 1
+    msg_162["LEAD"] = (
+      0 if not main_cruise_enabled
+      else 2 if enabled
+      else 1
+    )
+
     msg_162["LEAD_DISTANCE"] = msg_1b5["Longitudinal_Distance"]
 
   messages = []
+
   if send_161:
-    messages.append(packer.make_can_msg("CCNC_0x161", CAN.ECAN, msg_161))
+    messages.append(
+      packer.make_can_msg(
+        "CCNC_0x161",
+        CAN.ECAN,
+        msg_161,
+      )
+    )
+
   if send_162:
-    messages.append(packer.make_can_msg("CCNC_0x162", CAN.ECAN, msg_162))
+    messages.append(
+      packer.make_can_msg(
+        "CCNC_0x162",
+        CAN.ECAN,
+        msg_162,
+      )
+    )
+
   return messages
 
 
