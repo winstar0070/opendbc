@@ -8,7 +8,10 @@ from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 # Temporary, stationary-only left/right lane handoff demo. Disable after on-cluster validation.
 CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
-CCNC_LANE_DEMO_SIDE_FRAMES = 240
+# Tune this 30..60 to change the outward push; the rest pose remains 15/15.
+CCNC_LANE_DEMO_OUTER_POSITION = 60
+CCNC_LANE_DEMO_MOVE_FRAMES = 180
+CCNC_LANE_DEMO_SIDE_FRAMES = 40 + CCNC_LANE_DEMO_MOVE_FRAMES + 20 + 40 + 20
 
 
 class CanBus(CanBusBase):
@@ -132,28 +135,43 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def ccnc_stopped_lane_handoff(frame):
-  # Each direction: 2s idle, 6s continuous travel, 1s green hold, 2s blink,
+  # Each direction: 2s idle, 9s continuous travel, 1s green hold, 2s blink,
   # 1s idle (source 0x161 at ~20Hz). The clock is independent of COUNTER wrap.
   phase = frame % CCNC_LANE_DEMO_SIDE_FRAMES
   left_change = (frame // CCNC_LANE_DEMO_SIDE_FRAMES) % 2 == 0
-  moving = 40 <= phase < 160
-  progress = min(1.0, max(0.0, (phase - 40) / 119.0))
+  move_end = 40 + CCNC_LANE_DEMO_MOVE_FRAMES
+  blink_start = move_end + 20
+  blink_end = blink_start + 40
+  moving = 40 <= phase < move_end
+  progress = min(1.0, max(0.0, (phase - 40) / float(CCNC_LANE_DEMO_MOVE_FRAMES - 1)))
   # One curve across the entire crossing, with zero velocity and acceleration
   # at both ends. Round only the final CAN positions (integer signal fields).
   eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
   travel = 30.0 * eased
   crossed = travel >= 15.0
   target_fill = moving and not crossed
-  central_fill = crossed and phase < 220
+  central_fill = crossed and phase < blink_end
 
   left_position = right_position = 15
   if moving:
-    # Left change: 15/15 -> 0/30, rebind to 30/0, continue to 15/15.
-    # After rebinding both boundaries keep moving in the SAME screen direction;
-    # never reverse the old lane toward center or snap directly to 15/15.
-    position = 15.0 - travel if not crossed else 45.0 - travel
-    left_position = round(position) if left_change else 30 - round(position)
-    right_position = 30 - left_position
+    # Expand only during travel: 15/15 -> 0/MAX, exchange hidden boundaries,
+    # then MAX/0 -> 15/15. These are actual CAN positions, not a virtual range.
+    # Test whether the expanded corridor brings the target green area toward the
+    # car; its rendering and clipping above 30 still require cluster testing.
+    outer_limit = max(30, min(60, CCNC_LANE_DEMO_OUTER_POSITION))
+    half_progress = 2.0 * eased if not crossed else 2.0 * eased - 1.0
+    if not crossed:
+      near_position = round(15.0 * (1.0 - half_progress))
+      far_position = round(15.0 + (outer_limit - 15.0) * half_progress)
+      left_position, right_position = near_position, far_position
+    else:
+      # Central highlight is already on while the new green boundaries come in:
+      # the car overlaps the green corridor before it settles at 15/15.
+      far_position = round(outer_limit - (outer_limit - 15.0) * half_progress)
+      near_position = round(15.0 * half_progress)
+      left_position, right_position = far_position, near_position
+    if not left_change:
+      left_position, right_position = right_position, left_position
 
   left_color = right_color = 6
   if moving:
@@ -164,10 +182,10 @@ def ccnc_stopped_lane_handoff(frame):
       # green floor carries the crossing. Reveal the new lines as they move in.
       left_color = right_color = 1
 
-  if phase < 40 or phase >= 220:
+  if phase < 40 or phase >= blink_end:
     left_color = right_color = 2
-  elif 180 <= phase < 220:
-    left_color = right_color = 2 if ((phase - 180) // 10) % 2 == 0 else 6
+  elif blink_start <= phase < blink_end:
+    left_color = right_color = 2 if ((phase - blink_start) // 10) % 2 == 0 else 6
 
   return {
     "LANELINE_LEFT": left_color,
@@ -180,6 +198,9 @@ def ccnc_stopped_lane_handoff(frame):
     "LANE_RIGHT": int(target_fill and not left_change),
     "LANE_HIGHLIGHT": int(central_fill),
     "LANE_HIGHLIGHT_DISTANCE": 60.0 if central_fill else 0.0,
+    # Cluster arrows only; the demo does not command the vehicle's turn signals.
+    "LCA_LEFT_ARROW": 2 if moving and left_change else 0,
+    "LCA_RIGHT_ARROW": 2 if moving and not left_change else 0,
   }
 
 
