@@ -115,16 +115,23 @@ class TestCcncSourceTiming(unittest.TestCase):
         for side in ("LEFT", "RIGHT"):
           if values[f"LANELINE_{side}_POSITION"] <= 8:
             self.assertEqual(values[f"LANELINE_{side}"], 1)
+        if values["LANELINE_LEFT"] == values["LANELINE_RIGHT"] == 6:
+          self.assertEqual(values["LANELINE_LEFT_POSITION"] + values["LANELINE_RIGHT_POSITION"], 30)
         phase = frame % 300
         moving = 40 <= phase < 220
         self.assertEqual(values["LCA_LEFT_ARROW"], 2 if moving and (frame // 300) % 2 == 0 else 0)
         self.assertEqual(values["LCA_RIGHT_ARROW"], 2 if moving and (frame // 300) % 2 == 1 else 0)
-        if 40 <= phase < 130:
+        if 40 <= phase < 125:
           self.assertEqual(values["LANE_HIGHLIGHT"], 0)
           self.assertEqual(values["LANE_LEFT"], int((frame // 300) % 2 == 0))
           self.assertEqual(values["LANE_RIGHT"], int((frame // 300) % 2 == 1))
+        elif 125 <= phase < 135:
+          self.assertEqual(values["LANE_HIGHLIGHT"], 1)
+          self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0)
+          self.assertEqual(values["LANE_LEFT"], int((frame // 300) % 2 == 0))
+          self.assertEqual(values["LANE_RIGHT"], int((frame // 300) % 2 == 1))
         else:
-          highlight = 130 <= phase < 280
+          highlight = 135 <= phase < 280
           self.assertEqual(values["LANE_HIGHLIGHT"], int(highlight))
           self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if highlight else 0.0)
           self.assertEqual((values["LANE_LEFT"], values["LANE_RIGHT"]), (0, 0))

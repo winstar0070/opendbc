@@ -149,8 +149,10 @@ def ccnc_stopped_lane_handoff(frame):
   eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
   travel = 30.0 * eased
   crossed = travel >= 15.0
-  target_fill = moving and not crossed
-  central_fill = crossed and phase < blink_end
+  # Overlap target and central fill across the boundary exchange (~0.5s).
+  # The cluster may apply these fields on different render frames.
+  target_fill = moving and travel < 16.5
+  central_fill = travel >= 13.5 and phase < blink_end
 
   left_position = right_position = 15
   if moving:
@@ -160,16 +162,16 @@ def ccnc_stopped_lane_handoff(frame):
     # car; its rendering and clipping above 30 still require cluster testing.
     outer_limit = max(30, min(60, CCNC_LANE_DEMO_OUTER_POSITION))
     half_progress = 2.0 * eased if not crossed else 2.0 * eased - 1.0
-    if not crossed:
-      near_position = round(15.0 * (1.0 - half_progress))
-      far_position = round(15.0 + (outer_limit - 15.0) * half_progress)
-      left_position, right_position = near_position, far_position
-    else:
-      # Central highlight is already on while the new green boundaries come in:
-      # the car overlaps the green corridor before it settles at 15/15.
-      far_position = round(outer_limit - (outer_limit - 15.0) * half_progress)
-      near_position = round(15.0 * half_progress)
-      left_position, right_position = far_position, near_position
+    far = (15.0 + (outer_limit - 15.0) * half_progress if not crossed
+           else outer_limit - (outer_limit - 15.0) * half_progress)
+    far_position = round(far)
+    # Maintain the 15+15 corridor while both borders are visible. Expand toward
+    # MAX only after hiding the inner border; on return restore width before
+    # revealing it. The visible outer border keeps the same smooth trajectory.
+    near_position = (30 - far_position if far <= 22.0
+                     else round(8.0 * (outer_limit - far) / (outer_limit - 22.0)))
+    left_position, right_position = ((near_position, far_position) if not crossed
+                                     else (far_position, near_position))
     if not left_change:
       left_position, right_position = right_position, left_position
 
