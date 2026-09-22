@@ -32,13 +32,13 @@ def read_model_lanes(model, timestamp: float) -> LaneModelSample | None:
 
 
 def target_within_road(pair, direction, edges):
-  if pair is None or direction not in (1, 2) or len(edges) != 2:
+  if pair is None or direction not in (1, 2):
     return False
-  edge = edges[0 if direction == 1 else 1]
+  edge = edges[0 if direction == 1 else 1] if len(edges) == 2 else None
+  # Comma's active lane-change state is the trigger. Only a known road edge
+  # vetoes the target; absent/uncertain edge evidence must not hide the display.
   if edge is None or not math.isfinite(edge):
-    return False
-  # The complete adjacent lane must fit on the road, not just its near marking.
-  # Missing/uncertain edges do not establish space for a lane-change display.
+    return True
   return edge <= pair[0] if direction == 1 else edge >= pair[1]
 
 
@@ -47,24 +47,6 @@ def lane_pair(lanes, index):
   if left is None or right is None or not (math.isfinite(left) and math.isfinite(right)):
     return None
   return (left, right) if 2.4 <= right - left <= 4.8 else None
-
-
-def camera_confirms_lanes(sample, camera, camera_time_nanos, display_time_nanos):
-  """Veto inconsistent geometry; camera lane quality does not prove an adjacent lane."""
-  if (sample is None or camera_time_nanos <= 0 or display_time_nanos <= 0 or
-      abs(display_time_nanos - camera_time_nanos) > 150_000_000):
-    return False
-  if camera.get('Info_LftLnQualSta') not in (2, 3) or camera.get('Info_RtLnQualSta') not in (2, 3):
-    return False
-  model_pair = lane_pair(sample.lanes, 1)
-  positions = (camera.get('Info_LftLnPosVal', math.nan), camera.get('Info_RtLnPosVal', math.nan))
-  if model_pair is None or not all(math.isfinite(p) for p in positions):
-    return False
-  # Compare per-side distances, not assumed camera/model sign conventions.
-  # These are display-only consistency tolerances, not calibrated control limits.
-  camera_width = sum(abs(p) for p in positions)
-  return (2.4 <= camera_width <= 4.8 and abs(camera_width - (model_pair[1] - model_pair[0])) <= 0.6 and
-          all(abs(abs(c) - abs(m)) <= 0.75 for c, m in zip(positions, model_pair, strict=True)))
 
 
 def smooth_pair(previous, current, dt):
@@ -122,10 +104,9 @@ class CcncLaneDisplay:
     if direction and not self.target_decided and sample.state == 2:
       # A late/recovered finishing sample cannot identify the original target.
       # Missing start-up evidence is pending, not a permanent rejection. Retry
-      # until both a target pair and its road edge can actually be evaluated.
+      # until a target pair can actually be evaluated.
       candidate = lane_pair(sample.lanes, 0 if direction == 1 else 2)
-      edge = sample.edges[0 if direction == 1 else 1] if len(sample.edges) == 2 else None
-      if candidate is not None and edge is not None and math.isfinite(edge):
+      if candidate is not None:
         self.target_decided = True
         # Do not acquire the next lane if model indices switched while waiting.
         same_target = abs(sum(candidate) / 2 - self.target_hint) <= 0.75

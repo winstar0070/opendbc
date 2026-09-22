@@ -141,7 +141,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["SOUNDS_4"] = 0
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
-  # Use the same confirmed model/road-edge/camera result as lane animation.
+  # Use the same active model lane-change result as lane animation.
   # Turn signals alone (including hazards) must not request lane-change arrows.
   changing = (lfa_icon and lane_values is not None and out.vEgo >= LANE_CHANGE_SPEED_MIN and
               bool(left_blinker) != bool(right_blinker) and

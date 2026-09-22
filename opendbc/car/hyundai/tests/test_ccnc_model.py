@@ -22,27 +22,31 @@ class TestModelLanes(unittest.TestCase):
     self.assertIsNone(read_model_lanes(model, 3.0))
 
   def test_edge_without_adjacent_lane_blocks_both_directions(self):
-    for direction, edges in ((1, (-2.1, 9.0)), (2, (-9.0, 2.1)),
-                             (1, (None, 9.0)), (2, (-9.0, None))):
+    for direction, edges in ((1, (-2.1, 9.0)), (2, (-9.0, 2.1))):
       display = CcncLaneDisplay()
       for i in range(8):
         self.assertIsNone(display.update(sample(i * .05, offset=.05 * i, state=2, direction=direction, edges=edges)))
 
-  def test_initial_missing_target_or_edge_recovers_when_data_arrives(self):
+  def test_initial_missing_target_recovers_when_data_arrives(self):
     for direction in (1, 2):
-      for missing in ('lane', 'edge'):
-        with self.subTest(direction=direction, missing=missing):
+      with self.subTest(direction=direction):
+        display = CcncLaneDisplay()
+        lanes = [-5.4, -1.8, 1.8, 5.4]
+        lanes[0 if direction == 1 else 3] = None
+        self.assertIsNone(display.update(sample(0, state=2, direction=direction, lanes=tuple(lanes))))
+        recovered = display.update(sample(.05, state=2, direction=direction))
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+
+  def test_comma_change_accepts_missing_edge_and_continues_when_edge_is_lost(self):
+    for direction in (1, 2):
+      for edges in ((None, None), (-9.0, 9.0)):
+        with self.subTest(direction=direction, edges=edges):
           display = CcncLaneDisplay()
-          lanes = [-5.4, -1.8, 1.8, 5.4]
-          edges = [-9.0, 9.0]
-          if missing == 'lane':
-            lanes[0 if direction == 1 else 3] = None
-          else:
-            edges[0 if direction == 1 else 1] = None
-          self.assertIsNone(display.update(sample(0, state=2, direction=direction, lanes=tuple(lanes), edges=tuple(edges))))
-          recovered = display.update(sample(.05, state=2, direction=direction))
-          self.assertIsNotNone(recovered)
-          self.assertEqual(recovered['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+          result = display.update(sample(0, state=2, direction=direction, edges=edges))
+          self.assertEqual(result['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+          result = display.update(sample(.05, state=2, direction=direction, edges=(None, None)))
+          self.assertEqual(result['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
 
   def test_pending_target_does_not_acquire_another_lane_after_index_switch(self):
     display = CcncLaneDisplay()
@@ -54,7 +58,7 @@ class TestModelLanes(unittest.TestCase):
     self.assertIsNone(display.update(sample(0, state=2, direction=2, edges=(-9.0, 2.0))))
     self.assertIsNone(display.update(sample(.05, state=2, direction=2)))
 
-  def test_edge_loss_during_change_clears_display_and_does_not_rearm(self):
+  def test_detected_road_edge_inside_target_clears_display_and_does_not_rearm(self):
     display = CcncLaneDisplay()
     self.assertIsNotNone(display.update(sample(0, state=2, direction=2)))
     self.assertIsNone(display.update(sample(.05, state=2, direction=2, edges=(-9.0, 2.0))))

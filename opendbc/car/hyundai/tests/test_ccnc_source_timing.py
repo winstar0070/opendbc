@@ -7,7 +7,7 @@ from opendbc.car import Bus
 from opendbc.car.hyundai.carstate import CarState
 from opendbc.car.hyundai.carcontroller import CarController
 from opendbc.car.hyundai.hyundaicanfd import CanBus
-from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample, camera_confirms_lanes
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 
 
@@ -211,28 +211,10 @@ class TestCcncSourceTiming(unittest.TestCase):
 
       self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (0, 0))
 
-  def test_camera_cross_check_uses_decoded_positions_and_timestamps(self):
-    parser = CANParser(DBC, [("FR_CMR_03_50ms", 20), ("CCNC_0x161", 20)], 2)
-    address, data, _ = self.controller.packer.make_can_msg("FR_CMR_03_50ms", 2, self.cs.msg_1b5)
-    parser.update([(1_000_000_000, [(address, data, 2)]),
-                   (1_020_000_000, [(0x161, bytes.fromhex(STOCK_161), 2)])])
-    model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 1)
-    camera = parser.vl["FR_CMR_03_50ms"]
-    camera_time = parser.ts_nanos["FR_CMR_03_50ms"]["Info_LftLnPosVal"]
-    display_time = parser.ts_nanos["CCNC_0x161"]["COUNTER"]
-    self.assertEqual((camera_time, display_time), (1_000_000_000, 1_020_000_000))
-    self.assertTrue(camera_confirms_lanes(model, camera, camera_time, display_time))
-    self.assertFalse(camera_confirms_lanes(model, camera, camera_time, 1_200_000_000))
-    for values in ({"Info_LftLnPosVal": float("nan")},
-                   {"Info_LftLnPosVal": -3.0, "Info_RtLnPosVal": 3.0},
-                   {"Info_LftLnPosVal": -2.2, "Info_RtLnPosVal": 2.2}):
-      self.assertFalse(camera_confirms_lanes(model, dict(camera) | values, camera_time, display_time))
-    self.assertFalse(camera_confirms_lanes(None, camera, camera_time, display_time))
-
-  def test_camera_disagreement_or_staleness_blocks_model_override(self):
+  def test_comma_change_does_not_require_stock_camera_agreement(self):
     self.cc.latActive = True
     self.cs.out.rightBlinker = True
-    self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 2, edges=(-9.0, 9.0))
+    self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 2, edges=(None, None))
     baseline = copy.copy(self.cs.msg_1b5)
     for change, camera_time in (({"Info_RtLnQualSta": 1}, 1_000_000_000),
                                 ({"Info_LftLnQualSta": 7}, 1_000_000_000),
@@ -244,9 +226,9 @@ class TestCcncSourceTiming(unittest.TestCase):
         self.cs.msg_161 = copy.copy(self.msg_161)
         _, data, _ = self.display_messages(0, updated_161=True)[0]
         values = decode("CCNC_0x161", 0x161, data.hex())
-        for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANE_RIGHT", "LANE_HIGHLIGHT"):
-          self.assertEqual(values[key], self.msg_161[key])
-        self.assertIsNone(self.controller.ccnc_display.target)
+        self.assertEqual(values["LANE_RIGHT"], 1)
+        self.assertEqual(values["LCA_RIGHT_ARROW"], 2)
+        self.assertIsNotNone(self.controller.ccnc_display.target)
 
   def test_blinker_cancel_resets_active_display(self):
     self.cc.latActive = True
