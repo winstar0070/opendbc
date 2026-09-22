@@ -4,14 +4,15 @@ from types import SimpleNamespace
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample, read_model_lanes
 
 
-def sample(t, offset=0.0, state=0, direction=0, lanes=None):
-  return LaneModelSample(t, tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4)) if lanes is None else lanes, state, direction)
+def sample(t, offset=0.0, state=0, direction=0, lanes=None, edges=(-9.0, 9.0)):
+  return LaneModelSample(t, tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4)) if lanes is None else lanes, state, direction, edges)
 
 
 class TestModelLanes(unittest.TestCase):
   def test_reader_rejects_bad_points_and_probabilities(self):
     model = SimpleNamespace(laneLines=[SimpleNamespace(x=[0.0], y=[y]) for y in (-5.4, -1.8, 1.8, 5.4)],
                             laneLineProbs=[0.9] * 4, laneLineStds=[0.1] * 4,
+                            roadEdges=[SimpleNamespace(x=[0.0], y=[y]) for y in (-9.0, 9.0)], roadEdgeStds=[0.1, 0.1],
                             meta=SimpleNamespace(laneChangeState=SimpleNamespace(raw=2), laneChangeDirection=SimpleNamespace(raw=1)))
     self.assertEqual(read_model_lanes(model, 1.0), sample(1.0, state=2, direction=1))
     model.laneLines[1].y = [float('nan')]
@@ -19,6 +20,31 @@ class TestModelLanes(unittest.TestCase):
     self.assertEqual(read_model_lanes(model, 2.0).lanes[1:3], (None, None))
     model.laneLines = []
     self.assertIsNone(read_model_lanes(model, 3.0))
+
+  def test_edge_without_adjacent_lane_blocks_both_directions(self):
+    for direction, edges in ((1, (-2.1, 9.0)), (2, (-9.0, 2.1)),
+                             (1, (None, 9.0)), (2, (-9.0, None))):
+      display = CcncLaneDisplay()
+      for i in range(8):
+        self.assertIsNone(display.update(sample(i * .05, offset=.05 * i, state=2, direction=direction, edges=edges)))
+
+  def test_edge_loss_during_change_clears_display_and_does_not_rearm(self):
+    display = CcncLaneDisplay()
+    self.assertIsNotNone(display.update(sample(0, state=2, direction=2)))
+    self.assertIsNone(display.update(sample(.05, state=2, direction=2, edges=(-9.0, 2.0))))
+    self.assertIsNone(display.update(sample(.1, state=2, direction=2)))
+
+  def test_reader_drops_uncertain_or_malformed_road_edges(self):
+    model = SimpleNamespace(laneLines=[SimpleNamespace(x=[0.0], y=[y]) for y in (-5.4, -1.8, 1.8, 5.4)],
+                            laneLineProbs=[.9] * 4, laneLineStds=[.1] * 4,
+                            roadEdges=[SimpleNamespace(x=[0.0], y=[-9.0]), SimpleNamespace(x=[0.0], y=[9.0])],
+                            roadEdgeStds=[.8, .1],
+                            meta=SimpleNamespace(laneChangeState=SimpleNamespace(raw=2), laneChangeDirection=SimpleNamespace(raw=1)))
+    self.assertEqual(read_model_lanes(model, 1).edges, (None, 9.0))
+    model.roadEdges[1].y = [float('nan')]
+    self.assertEqual(read_model_lanes(model, 2).edges, (None, None))
+    model.roadEdges = []
+    self.assertEqual(read_model_lanes(model, 3).edges, (None, None))
 
   def test_stationary_geometry_does_not_animate_with_time(self):
     display = CcncLaneDisplay()
@@ -114,14 +140,13 @@ class TestModelLanes(unittest.TestCase):
   def test_finishing_without_tracked_target_does_not_select_another_lane(self):
     display = CcncLaneDisplay()
     result = display.update(sample(1.0, state=3, direction=1))
-    self.assertEqual((result['LANE_LEFT'], result['LANE_HIGHLIGHT']), (0, 0))
+    self.assertIsNone(result)
 
   def test_unmatched_target_does_not_invent_completion(self):
     display = CcncLaneDisplay()
     display.update(sample(0, state=2, direction=1))
     result = display.update(sample(0.05, lanes=(-8.0, -1.8, 1.8, 8.0), state=2, direction=1))
-    self.assertEqual(result['LANE_HIGHLIGHT'], 0)
-    self.assertEqual(result['LANE_LEFT'], 0)
+    self.assertIsNone(result)
 
 
 if __name__ == '__main__':

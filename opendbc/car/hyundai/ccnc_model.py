@@ -9,6 +9,7 @@ class LaneModelSample:
   lanes: tuple[float | None, ...]
   state: int
   direction: int
+  edges: tuple[float | None, ...] = (None, None)
 
 
 def read_model_lanes(model, timestamp: float) -> LaneModelSample | None:
@@ -21,7 +22,24 @@ def read_model_lanes(model, timestamp: float) -> LaneModelSample | None:
              and math.isfinite(line.y[0]) and abs(line.y[0]) < 12.0
              and math.isfinite(prob) and prob >= 0.5 and math.isfinite(std) and 0 <= std <= 0.5)
     lanes.append(float(line.y[0]) if valid else None)
-  return LaneModelSample(timestamp, tuple(lanes), model.meta.laneChangeState.raw, model.meta.laneChangeDirection.raw)
+  edges = [None, None]
+  if len(model.roadEdges) == 2 and len(model.roadEdgeStds) == 2:
+    for i, (edge, std) in enumerate(zip(model.roadEdges, model.roadEdgeStds, strict=True)):
+      if (len(edge.x) > 0 and len(edge.y) > 0 and math.isfinite(edge.x[0]) and abs(edge.x[0]) <= 5.0
+          and math.isfinite(edge.y[0]) and abs(edge.y[0]) < 30.0 and math.isfinite(std) and 0 <= std <= 0.5):
+        edges[i] = float(edge.y[0])
+  return LaneModelSample(timestamp, tuple(lanes), model.meta.laneChangeState.raw, model.meta.laneChangeDirection.raw, tuple(edges))
+
+
+def target_within_road(pair, direction, edges):
+  if pair is None or direction not in (1, 2) or len(edges) != 2:
+    return False
+  edge = edges[0 if direction == 1 else 1]
+  if edge is None or not math.isfinite(edge):
+    return False
+  # The complete adjacent lane must fit on the road, not just its near marking.
+  # Missing/uncertain edges do not establish space for a lane-change display.
+  return edge <= pair[0] if direction == 1 else edge >= pair[1]
 
 
 def lane_pair(lanes, index):
@@ -83,11 +101,20 @@ class CcncLaneDisplay:
       candidates = [p for i in range(3) if (p := lane_pair(sample.lanes, i)) is not None]
       nearest = min(candidates, key=lambda p: abs(sum(p) - sum(self.target)))
       # Reject a lost/replaced boundary rather than animating to an unrelated lane.
-      if max(abs(a - b) for a, b in zip(nearest, self.target, strict=True)) > 0.75:
+      if (not target_within_road(nearest, direction, sample.edges) or
+          max(abs(a - b) for a, b in zip(nearest, self.target, strict=True)) > 0.75):
         self.target = None
         self.crossed = False
       else:
         self.target = smooth_pair(self.target, nearest, dt)
+
+    if direction and not target_within_road(self.target, direction, sample.edges):
+      # Do not fall through to model ego geometry: even white model lines could
+      # shake during a turn. Keep stock display until a new change is started.
+      self.target = None
+      self.crossed = False
+      self.values = None
+      return None
 
     if self.target is not None:
       self.crossed = self.target[0] <= 0 <= self.target[1]
