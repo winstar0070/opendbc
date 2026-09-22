@@ -6,7 +6,7 @@ from opendbc.car.hyundai.values import HyundaiFlags
 from opendbc.sunnypilot.car.hyundai.lead_data_ext import CanFdLeadData
 
 
-# Temporary, stationary-only cluster test. Disable after checking the green lane lines.
+# Temporary, stationary-only cluster test. Disable after checking the green lines and central fill.
 CCNC_DEV_STOPPED_GREEN_LANES_TEST = True
 
 
@@ -424,7 +424,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["LANELINE_RIGHT_POSITION"] = right_lane
 
   if stopped_green_lanes_test:
-    # Isolate the two existing lane lines: straight, centered, green, with no fill.
+    # Keep the verified green lines centered and add the central green fill for validation.
     # Departure warnings retain priority over the test color.
     msg_161.update({
       "LANELINE_LEFT": 4 if hud.leftLaneDepart else 6,
@@ -435,8 +435,8 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       "CENTERLINE": 0,
       "LANE_LEFT": 0,
       "LANE_RIGHT": 0,
-      "LANE_HIGHLIGHT": 0,
-      "LANE_HIGHLIGHT_DISTANCE": 0.0,
+      "LANE_HIGHLIGHT": 1,
+      "LANE_HIGHLIGHT_DISTANCE": 60.0,  # Physical metres; the packer applies the DBC's 0.1 scale.
     })
 
   if hud.leftLaneDepart or hud.rightLaneDepart:

@@ -112,8 +112,8 @@ class TestCcncSourceTiming(unittest.TestCase):
       "CENTERLINE": 0,
       "LANE_LEFT": 0,
       "LANE_RIGHT": 0,
-      "LANE_HIGHLIGHT": 0,
-      "LANE_HIGHLIGHT_DISTANCE": 0,
+      "LANE_HIGHLIGHT": 1,
+      "LANE_HIGHLIGHT_DISTANCE": 60.0,
       "LCA_LEFT_ARROW": 0,
       "LCA_RIGHT_ARROW": 0,
     }
@@ -134,6 +134,8 @@ class TestCcncSourceTiming(unittest.TestCase):
         _, data, _ = self.display_messages(frame, updated_161=True)[0]
         values = decode("CCNC_0x161", 0x161, data.hex())
         self.assertEqual((values["LANELINE_LEFT"], values["LANELINE_RIGHT"]), (color, color))
+        self.assertEqual(values["LANE_HIGHLIGHT"], 1 if color == 6 else 0)
+        self.assertEqual(values["LANE_HIGHLIGHT_DISTANCE"], 60.0 if color == 6 else 0.0)
 
   def test_green_line_test_can_be_disabled(self):
     self.cs.out.vEgo = 0.0
