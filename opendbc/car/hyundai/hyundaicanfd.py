@@ -149,6 +149,10 @@ def ccnc_stopped_lane_handoff(frame):
   eased = progress ** 3 * (10.0 - 15.0 * progress + 6.0 * progress ** 2)
   travel = 30.0 * eased
   crossed = travel >= 15.0
+  # Overlap target and central fill across the boundary exchange (~0.5s).
+  # The cluster may apply these fields on different render frames.
+  target_fill = moving and travel < 16.5
+  central_fill = travel >= 13.5 and phase < blink_end
 
   left_position = right_position = 15
   if moving:
@@ -171,21 +175,14 @@ def ccnc_stopped_lane_handoff(frame):
     if not left_change:
       left_position, right_position = right_position, left_position
 
-  # Pre-light the central fill BEFORE either border is hidden (at position 8),
-  # and keep it on through the completion blink. Keep the target fill until the
-  # new borders have reappeared with margin. Geometry-based overlap also adapts
-  # to the configurable push radius; a brief overlap at the wrap was too late.
-  near_car = moving and min(left_position, right_position) <= 10
-  target_fill = moving and (not crossed or near_car)
-  central_fill = (crossed or near_car) and phase < blink_end
-
   left_color = right_color = 6
   if moving:
     left_color = 1 if left_position <= 8 else 6
     right_color = 1 if right_position <= 8 else 6
-    # Keep the outer green boundary present throughout the exchange. Hiding
-    # both boundaries may also suppress the cluster's filled lane rendering.
-    # Only the boundary under the car is hidden, before and after it swaps sides.
+    if abs(travel - 15.0) <= 1.5:
+      # Mask the boundary exchange on BOTH sides of the wrap; the target/central
+      # green floor carries the crossing. Reveal the new lines as they move in.
+      left_color = right_color = 1
 
   if phase < 40 or phase >= blink_end:
     left_color = right_color = 2
