@@ -6,6 +6,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, read_camera_lanes
 from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay
+from opendbc.car.hyundai.ccnc_radar import CcncRadarTracks
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
 from opendbc.car.interfaces import CarControllerBase
@@ -80,6 +81,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.ccnc_model = None
     self.ccnc_object_display = CcncObjectDisplay()
     self.ccnc_radar = None
+    self.ccnc_raw_radar = CcncRadarTracks() if CP.carFingerprint in (CAR.HYUNDAI_SONATA_2024, CAR.HYUNDAI_SONATA_HEV_2024) else None
     self.ccnc_object_lanes = None
 
   def update(self, CC, CC_SP, CS, now_nanos):
