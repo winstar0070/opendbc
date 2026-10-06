@@ -1,4 +1,5 @@
 import unittest
+import math
 from types import SimpleNamespace
 
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample, read_model_lanes
@@ -9,6 +10,24 @@ def sample(t, offset=0.0, state=0, direction=0, lanes=None, edges=(-9.0, 9.0)):
 
 
 class TestModelLanes(unittest.TestCase):
+  def test_crossing_jitter_does_not_toggle_fill_in_either_direction(self):
+    for direction in (1, 2):
+      display = CcncLaneDisplay()
+      results = []
+      offsets = [i * .04 for i in range(51)] + [1.8 + .04 * math.sin(i * .4) for i in range(100)]
+      for i, offset in enumerate(offsets):
+        results.append(display.update(sample(i * .05, offset=offset if direction == 1 else -offset, state=2, direction=direction)))
+      self.assertTrue(all(v['LANE_HIGHLIGHT'] == 1 for v in results[50:]))
+
+  def test_revealed_boundary_does_not_flicker_near_reveal_threshold(self):
+    for direction in (1, 2):
+      display = CcncLaneDisplay()
+      incoming = 'RIGHT' if direction == 1 else 'LEFT'
+      offsets = [i * .04 for i in range(86)] + [3.18 + .04 * math.sin(i * .4) for i in range(100)]
+      results = [display.update(sample(i * .05, offset=o if direction == 1 else -o, state=2, direction=direction))
+                 for i, o in enumerate(offsets)]
+      self.assertTrue(all(v[f'LANELINE_{incoming}'] == 6 for v in results[85:]))
+
   def test_reader_rejects_bad_points_and_probabilities(self):
     model = SimpleNamespace(laneLines=[SimpleNamespace(x=[0.0], y=[y]) for y in (-5.4, -1.8, 1.8, 5.4)],
                             laneLineProbs=[0.9] * 4, laneLineStds=[0.1] * 4,

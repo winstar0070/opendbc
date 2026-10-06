@@ -8,6 +8,7 @@ from opendbc.car.hyundai.carstate import CarState
 from opendbc.car.hyundai.carcontroller import CarController
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample
+from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, ObjectLanes, RadarObject, RadarObjects
 from opendbc.car.hyundai.values import CAR, HyundaiFlags
 
 
@@ -83,13 +84,46 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.controller.last_button_frame = 0
     self.controller.ccnc_display = CcncLaneDisplay()
     self.controller.ccnc_model = None
+    self.controller.ccnc_object_display = CcncObjectDisplay()
+    self.controller.ccnc_radar = None
+    self.controller.ccnc_object_lanes = None
 
   def display_messages(self, frame, updated_161=False, updated_162=False):
     self.controller.frame = frame
     self.cs.ccnc_0x161_updated = updated_161
     self.cs.ccnc_0x162_updated = updated_162
-    messages = self.controller.create_canfd_msgs(True, 20, 0.0, 0.0, False, self.hud, self.cs, self.cc)
+    messages = self.controller.create_canfd_msgs(True, 20, 0.0, 0.0, False, self.hud, self.cs, self.cc,
+                                                now_nanos=1_000_000_000 + frame * 10_000_000)
     return [msg for msg in messages if msg[0] in (0x161, 0x162)]
+
+  def test_adjacent_objects_pack_without_mutating_stock_or_requiring_blinkers(self):
+    self.cs.msg_162.update({'LEAD_LEFT': 0, 'LEAD_RIGHT': 0})
+    stock = self.cs.msg_162.copy()
+    self.controller.ccnc_radar = RadarObjects(1., (RadarObject(1, 25., -3.6), RadarObject(2, 40., 3.5)))
+    self.controller.ccnc_object_lanes = ObjectLanes(1., tuple(((0., y), (80., y)) for y in (-5.4, -1.8, 1.8, 5.4)))
+    messages = self.display_messages(0, updated_162=True)
+    values = decode('CCNC_0x162', 0x162, messages[0][1].hex())
+    for side, distance, lateral in (('LEFT', 25., 3.6), ('RIGHT', 40., 3.5)):
+      self.assertEqual(values[f'LEAD_{side}'], 2)
+      self.assertEqual(values[f'LEAD_{side}_DISTANCE'], distance)
+      self.assertAlmostEqual(values[f'LEAD_{side}_LATERAL'], lateral)
+    self.assertEqual(self.cs.msg_162, stock)
+    for key in ('COUNTER', 'LEAD_LEFT_REAR_STATUS', 'LEAD_RIGHT_REAR_STATUS', 'LEAD_ALT', 'VIBRATE'):
+      self.assertEqual(values[key], stock[key])
+    self.assertEqual(self.display_messages(1), [])
+    # Only new camera frames are sent, even when the radar changes.
+    self.assertEqual([m[0] for m in self.display_messages(2, updated_161=True)], [0x161])
+    expired = decode('CCNC_0x162', 0x162, self.display_messages(26, updated_162=True)[0][1].hex())
+    self.assertEqual((expired['LEAD_LEFT'], expired['LEAD_RIGHT']), (0, 0))
+
+  def test_stock_classified_objects_take_precedence_over_radar_boxes(self):
+    self.cs.msg_162.update({'LEAD_LEFT': 6, 'LEAD_LEFT_DISTANCE': 35., 'LEAD_LEFT_LATERAL': 4.2})
+    self.controller.ccnc_radar = RadarObjects(1., (RadarObject(1, 25., -3.6),))
+    self.controller.ccnc_object_lanes = ObjectLanes(1., tuple(((0., y), (80., y)) for y in (-5.4, -1.8, 1.8, 5.4)))
+    values = decode('CCNC_0x162', 0x162, self.display_messages(0, updated_162=True)[0][1].hex())
+    self.assertEqual(values['LEAD_LEFT'], 6)
+    self.assertEqual(values['LEAD_LEFT_DISTANCE'], 35.)
+    self.assertAlmostEqual(values['LEAD_LEFT_LATERAL'], 4.2)
 
   def test_sends_only_the_source_message_updated_this_control_cycle(self):
     for speed in (0.0, 0.099, 0.1, 20.0):

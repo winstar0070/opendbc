@@ -71,6 +71,7 @@ class CcncLaneDisplay:
     self.target_hint = None
     self.direction = 0
     self.crossed = False
+    self.incoming_visible = False
     self.values = None
 
   def update(self, sample: LaneModelSample | None):
@@ -97,6 +98,7 @@ class CcncLaneDisplay:
     if direction != self.direction:
       self.direction = direction
       self.crossed = False
+      self.incoming_visible = False
       self.target = None
       self.target_decided = False
       width = ego[1] - ego[0]
@@ -132,7 +134,11 @@ class CcncLaneDisplay:
       return None
 
     if self.target is not None:
-      self.crossed = self.target[0] <= 0 <= self.target[1]
+      # Separate entry and exit thresholds so centimetre-scale model jitter
+      # cannot repeatedly exchange the side and central green areas. A genuine
+      # reversal still restores the side area, and cancellation resets both.
+      depth = min(-self.target[0], self.target[1])
+      self.crossed = depth >= (-0.10 if self.crossed else 0.10)
     active = bool(direction and self.target is not None)
     filled = active and self.crossed
     pair = self.target if filled else self.ego
@@ -150,9 +156,11 @@ class CcncLaneDisplay:
     # the green area is still beside the car. Keep the opposite boundary visible.
     # Reveal only after entering the target lane and nearing its center.
     if active:
-      if direction == 1 and (not filled or right < 12):
+      incoming_position = right if direction == 1 else left
+      self.incoming_visible = filled and incoming_position >= (10 if self.incoming_visible else 12)
+      if direction == 1 and not self.incoming_visible:
         right_color = 1
-      elif direction == 2 and (not filled or left < 12):
+      elif direction == 2 and not self.incoming_visible:
         left_color = 1
     self.values = {
       'LANELINE_LEFT_POSITION': left, 'LANELINE_RIGHT_POSITION': right,

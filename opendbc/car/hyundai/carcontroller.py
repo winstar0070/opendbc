@@ -5,6 +5,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_a
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay
+from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
 from opendbc.car.interfaces import CarControllerBase
@@ -77,6 +78,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.ccnc_display = CcncLaneDisplay()
     # Immutable, freshness-checked model sample injected by card.py for the HUD only.
     self.ccnc_model = None
+    self.ccnc_object_display = CcncObjectDisplay()
+    self.ccnc_radar = None
+    self.ccnc_object_lanes = None
 
   def update(self, CC, CC_SP, CS, now_nanos):
     EsccCarController.update(self, CS)
@@ -131,7 +135,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # *** CAN/CAN FD specific ***
     if self.CP.flags & HyundaiFlags.CANFD:
       can_sends.extend(self.create_canfd_msgs(apply_steer_req, apply_torque, set_speed_in_units, accel,
-                                              stopping, hud_control, CS, CC))
+                                              stopping, hud_control, CS, CC, now_nanos=now_nanos))
     else:
       # Hold torque with induced temporary fault when cutting the actuation bit
       # FIXME: we don't use this with CAN FD?
@@ -199,7 +203,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
 
     return can_sends
 
-  def create_canfd_msgs(self, apply_steer_req, apply_torque, set_speed_in_units, accel, stopping, hud_control, CS, CC):
+  def create_canfd_msgs(self, apply_steer_req, apply_torque, set_speed_in_units, accel, stopping, hud_control, CS, CC, now_nanos=0):
     can_sends = []
 
     lka_steering = self.CP.flags & HyundaiFlags.CANFD_LKA_STEER_MSG
@@ -219,6 +223,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
       # Replay each blocked stock display frame on its source update to retain its cadence, counter, and phase.
       if CS.ccnc_0x161_updated or CS.ccnc_0x162_updated:
         lane_values = None
+        object_values = None
+        if CS.ccnc_0x162_updated:
+          object_values = self.ccnc_object_display.update(self.ccnc_radar, self.ccnc_object_lanes, now_nanos * 1e-9)
         if CS.ccnc_0x161_updated:
           model = self.ccnc_model
           # CC's requested blinkers come from model metadata too; require the
@@ -232,7 +239,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CS.out.leftBlinker,
                                                   CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
-                                                  lane_values=lane_values))
+                                                  lane_values=lane_values, object_values=object_values))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

@@ -127,7 +127,19 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
-                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None):
+                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None):
+  # Do not retain synthesized display fields in CarState's stock snapshots.
+  # Each new frame must fall back to the actual camera data after expiry/loss.
+  msg_161, msg_162 = msg_161.copy(), msg_162.copy()
+  if object_values is not None:
+    for side in ("LEFT", "RIGHT"):
+      # Keep native classifications and positions, including unknown nonzero
+      # states. Supplement only an empty adjacent slot with measured radar data.
+      if msg_162[f"LEAD_{side}"] == 0 and f"LEAD_{side}" in object_values:
+        for suffix in ("", "_DISTANCE", "_LATERAL"):
+          key = f"LEAD_{side}{suffix}"
+          msg_162[key] = object_values[key]
+
   for f in {"FAULT_LSS", "FAULT_HDA", "FAULT_DAS", "FAULT_LFA", "FAULT_DAW", "FAULT_ESS"}:
     msg_162[f] = 0
 
