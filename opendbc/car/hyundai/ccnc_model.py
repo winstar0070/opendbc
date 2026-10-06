@@ -81,6 +81,10 @@ class CcncLaneDisplay:
   def reset(self):
     self.timestamp = None
     self.metadata_timestamp = None
+    self.completion_until = None
+    self.completion_now = None
+    self.completion_target = None
+    self.previous_state = None
     self.ego = None
     self.target = None
     self.target_decided = False
@@ -102,14 +106,21 @@ class CcncLaneDisplay:
     self.direction = direction
     self.target_decided = bool(direction)
 
+  def _clear_completion(self):
+    self.completion_until = None
+    self.completion_now = None
+    self.completion_target = None
+    self.previous_state = None
+
   def _pause(self, now):
+    self._clear_completion()
     if (self.timestamp is None or now is None or not math.isfinite(now) or
         not 0 <= now - self.timestamp <= 0.25):
       self._invalidate(self.direction)
     self.values = None
     return None
 
-  def update(self, sample: LaneModelSample | None, *, eligible=True, now=None):
+  def update(self, sample: LaneModelSample | None, *, eligible=True, now=None, completion_eligible=False):
     """Track fresh measurements independently from permission to display them."""
     if sample is None:
       return self._pause(now)
@@ -129,9 +140,51 @@ class CcncLaneDisplay:
         # clock, but never while an active maneuver association is retained.
         self.reset()
       self.metadata_timestamp = sample.timestamp
+    hold = self._completion(sample, completion_eligible, now)
+    if hold is not None:
+      self.values = hold
+      return hold
     values = self._update(sample)
+    self.previous_state = sample.state if completion_eligible and values is not None else None
     self.values = values if eligible else None
     return self.values
+
+  def _completion(self, sample, eligible, now):
+    # Only a measured, centered target after finishing -> off is completion.
+    # An off sample without finishing and centered-target evidence never arms it.
+    if self.completion_until is not None and sample.state != 0:
+      metadata_timestamp = self.metadata_timestamp
+      self.reset()
+      self.metadata_timestamp = metadata_timestamp
+    if self.completion_now is not None and now is not None and now < self.completion_now:
+      self._clear_completion()
+      return None
+    ego = lane_pair(sample.lanes, 1) if len(sample.lanes) == 4 else None
+    if not eligible or now is None or sample.state != 0 or sample.direction not in (0, self.direction) or ego is None:
+      self._clear_completion()
+      return None
+    target = self.completion_target if self.completion_until is not None else self.target
+    matched = (target is not None and max(abs(a - b) for a, b in zip(ego, target, strict=True)) <= 0.75)
+    # Completion requires the vehicle within 35 cm of the measured lane center.
+    centered = abs(sum(ego) / 2) <= 0.35
+    if not matched or not centered or not target_within_road(ego, self.direction, sample.edges):
+      self._clear_completion()
+      return None
+    if self.completion_until is None:
+      if self.previous_state != 3 or not self.crossed or self.target_seen is None or not 0 <= sample.timestamp - self.target_seen <= .25:
+        self._clear_completion()
+        return None
+      self.completion_until = now + 1.0
+      self.previous_state = None
+    if now >= self.completion_until:
+      self._clear_completion()
+      return None
+    self.completion_now = now
+    self.completion_target = ego
+    position = max(0, min(30, round(-30 * ego[0] / (ego[1] - ego[0]))))
+    return {'LANELINE_LEFT_POSITION': position, 'LANELINE_RIGHT_POSITION': 30 - position,
+            'LANELINE_LEFT': 6, 'LANELINE_RIGHT': 6, 'LANE_LEFT': 0, 'LANE_RIGHT': 0,
+            'LANE_HIGHLIGHT': 1, 'LANE_HIGHLIGHT_DISTANCE': 60.0}
 
   def _update(self, sample: LaneModelSample):
     direction = sample.direction if sample.state in (2, 3) and sample.direction in (1, 2) else 0

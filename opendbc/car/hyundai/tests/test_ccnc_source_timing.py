@@ -96,6 +96,47 @@ class TestCcncSourceTiming(unittest.TestCase):
                                                 now_nanos=1_000_000_000 + frame * 10_000_000)
     return [msg for msg in messages if msg[0] in (0x161, 0x162)]
 
+  def test_completion_hold_raw_packet_and_live_gates(self):
+    for gate in ('expiry', 'lat', 'icon', 'speed', 'new'):
+      self.setUp()
+      self.cc.latActive = True
+      self.cs.out.leftBlinker = True
+      for i in range(73):
+        offset = i * .05
+        lanes = tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4))
+        if offset >= 1.8:
+          lanes = (lanes[0] - 3.6, *lanes[:3])
+        self.controller.ccnc_model = LaneModelSample(1 + i * .05, lanes, 3 if i >= 70 else 2, 1)
+        self.display_messages(i * 5, updated_161=True)
+      # The turn signal can remain on after completing the maneuver.
+      self.controller.ccnc_model = LaneModelSample(4.65, (-5.4, -1.8, 1.8, 5.4), 0, 0)
+      msg = self.display_messages(365, updated_161=True)[0]
+      packed = decode('CCNC_0x161', 0x161, msg[1].hex())
+      self.assertEqual(packed['LANE_HIGHLIGHT'], 1)
+      self.assertEqual(packed['LCA_LEFT_ARROW'], 0)
+      self.assertEqual(packed['LCA_RIGHT_ARROW'], 0)
+      self.assertNotEqual(packed['LCA_LEFT_ICON'], 2)
+      frame = 370
+      if gate == 'lat':
+        self.cc.latActive = False
+      elif gate == 'icon':
+        self.controller.lfa_icon = 0
+      elif gate == 'speed':
+        self.cs.out.vEgo = 0
+      elif gate == 'new':
+        self.cs.out.rightBlinker = True
+      else:
+        # Advance fresh samples throughout the hold, rather than simulating
+        # a stale source expiry when testing the one-second deadline.
+        for frame in range(370, 465, 5):
+          self.controller.ccnc_model = LaneModelSample(1 + frame * .01, (-5.4, -1.8, 1.8, 5.4), 0, 0)
+          self.display_messages(frame, updated_161=True)
+        frame = 465
+      self.controller.ccnc_model = LaneModelSample(1 + frame * .01, (-5.4, -1.8, 1.8, 5.4), 1 if gate == 'new' else 0, 2 if gate == 'new' else 0)
+      msg = self.display_messages(frame, updated_161=True)[0]
+      self.assertIsNone(self.controller.ccnc_display.values)
+      self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LANE_HIGHLIGHT'], self.msg_161['LANE_HIGHLIGHT'])
+
   def test_missing_model_does_not_rearm_after_a_long_gap(self):
     self.cc.latActive = True
     self.cs.out.leftBlinker = True

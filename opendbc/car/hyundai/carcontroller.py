@@ -240,7 +240,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
                       CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS)
           # Lamp/control eligibility only gates publication. Missing model data
           # must not masquerade as a cancellation and rearm target selection.
-          lane_values = self.ccnc_display.update(model, eligible=changing, now=now_nanos * 1e-9)
+          lane_values = self.ccnc_display.update(
+            model, eligible=changing, now=now_nanos * 1e-9,
+            completion_eligible=bool(CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS))
           # Baseline ccNC animation follows real lamps and stock camera lanes,
           # independently of model/automatic lane-change availability.
           if (self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS and
@@ -250,7 +252,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CS.out.leftBlinker,
                                                   CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
-                                                  lane_values=lane_values, object_values=object_values, camera_values=camera_values))
+                                                  lane_values=lane_values, object_values=object_values, camera_values=camera_values,
+                                                  completion_hold=self.ccnc_display.completion_until is not None and lane_values is not None))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

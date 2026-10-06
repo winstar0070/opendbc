@@ -127,7 +127,8 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
-                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None, camera_values=None):
+                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None,
+                camera_values=None, completion_hold=False):
   # Do not retain synthesized display fields in CarState's stock snapshots.
   # Each new frame must fall back to the actual camera data after expiry/loss.
   msg_161, msg_162 = msg_161.copy(), msg_162.copy()
@@ -156,7 +157,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # Prefer model enhancement; fresh stock camera geometry is the baseline.
   model_values = lane_values
   lane_values = lane_values if lane_values is not None else camera_values
-  changing = (lfa_icon and lane_values is not None and out.vEgo >= LANE_CHANGE_SPEED_MIN and
+  changing = (not completion_hold and lfa_icon and lane_values is not None and out.vEgo >= LANE_CHANGE_SPEED_MIN and
               bool(left_blinker) != bool(right_blinker) and
               (camera_values is not None or
                any(lane_values.get(key, 0) for key in ("LANE_LEFT", "LANE_RIGHT", "LANE_HIGHLIGHT"))))
@@ -248,10 +249,11 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
       "TARGET": 0,
     })
 
+    # Generic vehicle avatar; this does not classify the detected vehicle.
     msg_162["LEAD"] = (
       0 if not main_cruise_enabled
-      else 2 if enabled
-      else 1
+      else 4 if enabled
+      else 3
     )
 
     msg_162["LEAD_DISTANCE"] = msg_1b5["Longitudinal_Distance"]

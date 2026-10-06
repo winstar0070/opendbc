@@ -332,3 +332,69 @@ class TestModelLanes(unittest.TestCase):
 
 if __name__ == '__main__':
   unittest.main()
+
+class TestCompletionHold(unittest.TestCase):
+  def completed(self, direction=1, finishing=True):
+    display = CcncLaneDisplay()
+    for i in range(73):
+      offset = i * .05
+      lanes = tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4))
+      if offset >= 1.8:
+        lanes = (lanes[0] - 3.6, *lanes[:3])
+      if direction == 2:
+        lanes = tuple(-y for y in reversed(lanes))
+      display.update(sample(i * .05, state=3 if finishing and i >= 70 else 2, direction=direction, lanes=lanes),
+                     now=i * .05, completion_eligible=True)
+    return display
+
+  def test_hold_tracks_fresh_center_then_expires(self):
+    for direction in (1, 2):
+      display = self.completed(direction)
+      for i in range(20):
+        t = 3.65 + i * .05
+        result = display.update(sample(t, offset=.1), eligible=False, completion_eligible=True, now=t)
+        self.assertEqual(result['LANE_HIGHLIGHT'], 1)
+        self.assertEqual(result['LANE_LEFT'], 0)
+        self.assertEqual(result['LANELINE_LEFT_POSITION'], 14)
+      self.assertIsNone(display.update(sample(4.65), eligible=False, completion_eligible=True, now=4.65))
+
+  def test_cancel_without_finishing_and_untracked_finishing_do_not_hold(self):
+    for display in (self.completed(finishing=False), CcncLaneDisplay()):
+      self.assertIsNone(display.update(sample(3.65), eligible=False, completion_eligible=True, now=3.65))
+    display = CcncLaneDisplay()
+    display.update(sample(3.6, state=3, direction=1), completion_eligible=True, now=3.6)
+    self.assertIsNone(display.update(sample(3.65), eligible=False, completion_eligible=True, now=3.65))
+
+  def test_hold_clears_on_loss_disengagement_or_new_maneuver(self):
+    for cause in ('missing', 'quality', 'stale', 'permission', 'new', 'opposite', 'unmatched', 'uncentered'):
+      display = self.completed()
+      self.assertIsNotNone(display.update(sample(3.65), eligible=False, completion_eligible=True, now=3.65))
+      md = sample(3.7)
+      if cause == 'missing':
+        md = None
+      elif cause == 'quality':
+        md = sample(3.7, lanes=(None,) * 4)
+      elif cause == 'stale':
+        md = sample(3.3)
+      elif cause == 'new':
+        md = sample(3.7, state=1, direction=1)
+      elif cause == 'opposite':
+        md = sample(3.7, direction=2)
+      elif cause == 'uncentered':
+        md = sample(3.7, offset=.4)
+      elif cause == 'unmatched':
+        md = sample(3.7, offset=1.)
+      self.assertIsNone(display.update(md, eligible=False, completion_eligible=cause != 'permission', now=3.7))
+      self.assertIsNone(display.update(sample(3.75), eligible=False, completion_eligible=True, now=3.75))
+
+  def test_hold_does_not_lock_a_new_maneuver_without_prechange(self):
+    display = self.completed()
+    for t in (3.65, 3.7, 3.75, 3.8, 3.85):
+      display.update(sample(t), eligible=False, completion_eligible=True, now=t)
+    result = display.update(sample(3.9, state=2, direction=1), completion_eligible=True, now=3.9)
+    self.assertEqual(result['LANE_LEFT'], 1)
+
+  def test_hold_stops_on_wall_clock_rollback(self):
+    display = self.completed()
+    display.update(sample(3.65), eligible=False, completion_eligible=True, now=3.8)
+    self.assertIsNone(display.update(sample(3.65), eligible=False, completion_eligible=True, now=3.7))
