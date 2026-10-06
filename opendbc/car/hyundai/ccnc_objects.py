@@ -5,6 +5,9 @@ import math
 
 MAX_AGE = 0.25
 MAX_SOURCE_SKEW = 0.15
+# CAN lateral resolution is 10cm; retain the bin for an extra 2.5cm.
+LATERAL_STEP = 0.1
+LATERAL_HYSTERESIS = 0.025
 # Same frame offset used by openpilot radard when matching model leads to radar.
 RADAR_TO_MODEL = 1.52
 LaneLine = tuple[tuple[float, float], ...]
@@ -72,6 +75,7 @@ class CcncObjectDisplay:
   def reset(self):
     self.timestamp = None
     self.selected: dict[str, RadarObject] = {}
+    self.display_lateral: dict[str, float] = {}
 
   def update(self, radar: RadarObjects | None, lanes: ObjectLanes | None, now: float) -> dict[str, float]:
     if (radar is None or lanes is None or not math.isfinite(now) or
@@ -85,6 +89,7 @@ class CcncObjectDisplay:
     self.timestamp = radar.timestamp
     values = {}
     selected = {}
+    display_lateral = {}
     for side, index in (("LEFT", 0), ("RIGHT", 2)):
       candidates = []
       for obj in radar.objects:
@@ -103,8 +108,17 @@ class CcncObjectDisplay:
         target = RadarObject(target.track_id, previous.distance + alpha * (target.distance - previous.distance),
                              previous.lateral + alpha * (target.lateral - previous.lateral))
       selected[side] = target
+      # Keep the measured EMA separate from the quantized display position.
+      lateral = abs(target.lateral)
+      prior_lateral = self.display_lateral.get(side) if previous is not None and target.track_id == previous.track_id else None
+      if prior_lateral is not None and abs(lateral - prior_lateral) <= LATERAL_STEP / 2 + LATERAL_HYSTERESIS:
+        lateral = prior_lateral
+      else:
+        lateral = math.floor(lateral / LATERAL_STEP + 0.5) * LATERAL_STEP
+      display_lateral[side] = lateral
       # Radar tracks do not supply an object class. Use the existing white box
       # enum rather than asserting that a reflector is a car/truck/person.
-      values.update({f"LEAD_{side}": 2, f"LEAD_{side}_DISTANCE": target.distance, f"LEAD_{side}_LATERAL": abs(target.lateral)})
+      values.update({f"LEAD_{side}": 2, f"LEAD_{side}_DISTANCE": target.distance, f"LEAD_{side}_LATERAL": lateral})
     self.selected = selected
+    self.display_lateral = display_lateral
     return values

@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
+from opendbc.can import CANPacker, CANParser
 from opendbc.car import structs
 from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, read_object_lanes, read_radar_objects
 
@@ -24,6 +25,60 @@ class TestCcncObjects(unittest.TestCase):
 
   def values(self, *points, t=1., geometry=None, now=None):
     return self.display.update(read_radar_objects(radar(*points), t), read_object_lanes(geometry or model(), t), t if now is None else now)
+
+  def packed_lateral(self, values, side="LEFT"):
+    message = CANPacker("hyundai_canfd_generated").make_can_msg("CCNC_0x162", 0, values)
+    parser = CANParser("hyundai_canfd_generated", [("CCNC_0x162", 0)], 0)
+    parser.update([(1, [message])])
+    return parser.vl["CCNC_0x162"][f"LEAD_{side}_LATERAL"]
+
+  def test_small_lateral_jitter_does_not_toggle_packed_can(self):
+    for side, sign in (("LEFT", 1), ("RIGHT", -1)):
+      self.display.reset()
+      packed = []
+      for i in range(40):
+        # Radar 5cm grid: +/-5cm around the 3.65m CAN rounding boundary.
+        measured = 3.6 if i % 2 == 0 else 3.7
+        values = self.values((1, 20., sign * measured), t=1. + i * .05)
+        packed.append(self.packed_lateral(values, side))
+      self.assertEqual(len(set(packed)), 1)
+      self.assertNotEqual(abs(self.display.selected[side].lateral), packed[-1])
+
+  def test_lateral_hysteresis_follows_sustained_motion_without_changing_distance(self):
+    self.values((1, 20., 3.6))
+    previous_x = 20.
+    previous_y = -3.6
+    for i in range(1, 21):
+      measured = 3.6 + i * .05
+      values = self.values((1, 20. + i, measured), t=1. + i * .05)
+      previous_x += (20. + i - previous_x) / 3.
+      previous_y += (-measured - previous_y) / 3.
+      self.assertAlmostEqual(values['LEAD_LEFT_DISTANCE'], previous_x)
+      self.assertAlmostEqual(self.display.selected['LEFT'].lateral, previous_y, places=6)
+      self.assertLessEqual(abs(self.packed_lateral(values) - abs(previous_y)), .075 + 1e-9)
+    self.assertGreater(self.packed_lateral(values), 4.4)
+
+  def test_lateral_hysteresis_clears_on_track_side_loss_and_time_reset(self):
+    for reset_kind in ('track', 'side', 'missing', 'stale', 'regression', 'explicit'):
+      with self.subTest(reset_kind=reset_kind):
+        self.display.reset()
+        self.values((1, 20., 3.6), t=2.)
+        self.values((1, 20., 3.7), t=2.05)
+        track, sign, side, t = 1, 1, 'LEFT', 2.10
+        if reset_kind == 'track':
+          track = 2
+        elif reset_kind == 'side':
+          sign, side = -1, 'RIGHT'
+        elif reset_kind == 'missing':
+          self.values(t=2.075)
+        elif reset_kind == 'stale':
+          self.values((1, 20., 3.6), t=2.05, now=2.4)
+        elif reset_kind == 'regression':
+          t = 1.
+        else:
+          self.display.reset()
+        values = self.values((track, 20., sign * 3.68), t=t)
+        self.assertAlmostEqual(self.packed_lateral(values, side), 3.7)
 
   def test_both_sides_use_measured_positions_and_unclassified_boxes(self):
     values = self.values((1, 25., 3.6), (2, 40., -3.5), (3, 15., 0.))
