@@ -96,6 +96,97 @@ class TestCcncSourceTiming(unittest.TestCase):
                                                 now_nanos=1_000_000_000 + frame * 10_000_000)
     return [msg for msg in messages if msg[0] in (0x161, 0x162)]
 
+  def test_missing_model_does_not_rearm_after_a_long_gap(self):
+    self.cc.latActive = True
+    self.cs.out.leftBlinker = True
+    self.cs.ccnc_camera_time_nanos = 0
+    self.controller.ccnc_model = LaneModelSample(1., (-3.7, -.1, 3.5, 7.1), 2, 1)
+    self.display_messages(0, updated_161=True)
+    self.controller.ccnc_model = None
+    self.display_messages(30, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.35, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    msg = self.display_messages(35, updated_161=True)[0]
+    self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LANE_LEFT'], 0)
+    # A known cancellation, unlike missing data, ends the maneuver.
+    self.controller.ccnc_model = LaneModelSample(1.4, (-5.4, -1.8, 1.8, 5.4), 0, 0)
+    self.display_messages(40, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.45, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    msg = self.display_messages(45, updated_161=True)[0]
+    self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LANE_LEFT'], 1)
+
+  def test_brief_missing_model_retains_target_across_index_switch(self):
+    self.cc.latActive = True
+    self.cs.out.leftBlinker = True
+    self.cs.ccnc_camera_time_nanos = 0
+    self.controller.ccnc_model = LaneModelSample(1., (-3.75, -.15, 3.45, 7.05), 2, 1)
+    self.display_messages(0, updated_161=True)
+    self.controller.ccnc_model = None
+    self.display_messages(5, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.1, (-7.3, -3.7, -.1, 3.5), 2, 1)
+    msg = self.display_messages(10, updated_161=True)[0]
+    values = decode('CCNC_0x161', 0x161, msg[1].hex())
+    self.assertEqual(values['LANE_LEFT'], 1)
+    self.assertLess(values['LANELINE_LEFT_POSITION'], 5)
+
+  def test_eligibility_gap_retains_association_and_republishes_held_sample(self):
+    for gate in ('blinker', 'lat', 'speed', 'lfa'):
+      with self.subTest(gate=gate):
+        self.setUp()
+        self.cc.latActive = True
+        self.cs.out.leftBlinker = True
+        self.cs.ccnc_camera_time_nanos = 0
+        self.controller.ccnc_model = LaneModelSample(1., (-3.75, -.15, 3.45, 7.05), 2, 1)
+        self.display_messages(0, updated_161=True)
+        if gate == 'blinker':
+          self.cs.out.leftBlinker = False
+        elif gate == 'lat':
+          self.cc.latActive = False
+        elif gate == 'speed':
+          self.cs.out.vEgo = 0.
+        else:
+          self.controller.lfa_icon = 0
+        self.controller.ccnc_model = LaneModelSample(1.05, (-7.3, -3.7, -.1, 3.5), 2, 1)
+        self.display_messages(5, updated_161=True)
+        self.assertIsNone(self.controller.ccnc_display.values)
+        self.cc.latActive = self.cs.out.leftBlinker = True
+        self.cs.out.vEgo, self.controller.lfa_icon = 20., 2
+        # Same model timestamp, only publication eligibility changed.
+        msg = self.display_messages(6, updated_161=True)[0]
+        values = decode('CCNC_0x161', 0x161, msg[1].hex())
+        self.assertEqual(values['LANE_LEFT'], 1)
+        self.assertLess(values['LANELINE_LEFT_POSITION'], 5)
+
+  def test_stale_or_future_cancellation_cannot_unlock_a_lost_target(self):
+    for timestamp in (1., 3.):
+      with self.subTest(timestamp=timestamp):
+        self.setUp()
+        self.cc.latActive = self.cs.out.leftBlinker = True
+        self.cs.ccnc_camera_time_nanos = 0
+        self.controller.ccnc_model = LaneModelSample(1., (-5.4, -1.8, 1.8, 5.4), 2, 1)
+        self.display_messages(0, updated_161=True)
+        self.controller.ccnc_model = None
+        self.display_messages(30, updated_161=True)
+        self.controller.ccnc_model = LaneModelSample(timestamp, (-5.4, -1.8, 1.8, 5.4), 0, 0)
+        self.display_messages(35, updated_161=True)
+        self.controller.ccnc_model = LaneModelSample(1.4, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+        msg = self.display_messages(40, updated_161=True)[0]
+        self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LANE_LEFT'], 0)
+
+  def test_fresh_age_but_out_of_order_cancel_cannot_rearm_display(self):
+    self.cc.latActive = self.cs.out.leftBlinker = True
+    self.cs.ccnc_camera_time_nanos = 0
+    self.controller.ccnc_model = LaneModelSample(1.05, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    self.display_messages(5, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.1, (), 2, 1)
+    self.display_messages(10, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.15, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    self.display_messages(15, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.1, (-5.4, -1.8, 1.8, 5.4), 0, 0)
+    self.display_messages(20, updated_161=True)
+    self.controller.ccnc_model = LaneModelSample(1.25, (-5.4, -1.8, 1.8, 5.4), 2, 1)
+    msg = self.display_messages(25, updated_161=True)[0]
+    self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LANE_LEFT'], 0)
+
   def test_native_adjacent_and_rear_objects_survive_without_radar(self):
     for side in ('LEFT', 'RIGHT'):
       self.cs.msg_162.update({f'LEAD_{side}': 4, f'LEAD_{side}_DISTANCE': 12., f'LEAD_{side}_LATERAL': 3.5,
@@ -257,7 +348,7 @@ class TestCcncSourceTiming(unittest.TestCase):
         self.cs.out.vEgo = speed
         for frame in range(6):
           offset = 0.6 if frame % 2 else -0.6
-          self.controller.ccnc_model = LaneModelSample(frame * 0.05, tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4)), state, direction, edges=(-9.0, 9.0))
+          self.controller.ccnc_model = LaneModelSample(1. + frame * .01, tuple(y + offset for y in (-5.4, -1.8, 1.8, 5.4)), state, direction, edges=(-9.0, 9.0))
           self.cs.msg_161 = copy.copy(self.msg_161)
           _, data, _ = self.display_messages(frame, updated_161=True)[0]
           values = decode("CCNC_0x161", 0x161, data.hex())
@@ -277,7 +368,7 @@ class TestCcncSourceTiming(unittest.TestCase):
             self.cs.out.leftBlinker = direction == 1 or (frame == 1 and hazards)
             self.cs.out.rightBlinker = direction == 2 or (frame == 1 and hazards)
             state = 2 if frame == 0 or hazards else 0
-            self.controller.ccnc_model = LaneModelSample(frame * .05, (-5.4, -1.8, 1.8, 5.4), state, direction, edges=(-9.0, 9.0))
+            self.controller.ccnc_model = LaneModelSample(1. + frame * .01, (-5.4, -1.8, 1.8, 5.4), state, direction, edges=(-9.0, 9.0))
             _, data, _ = self.display_messages(frame, updated_161=True)[0]
             values = decode("CCNC_0x161", 0x161, data.hex())
             expected = (2 if direction == 1 else 0, 2 if direction == 2 else 0) if frame == 0 else (0, 0)
@@ -291,7 +382,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.cs.out.rightBlinker = True
     for i in range(10):
       self.cs.msg_161 = copy.copy(self.msg_161)
-      self.controller.ccnc_model = LaneModelSample(i * .05, (-5.4, -1.2, 2.4, 6.0), 2, 2, edges=(-9.0, 2.6))
+      self.controller.ccnc_model = LaneModelSample(1. + i * .01, (-5.4, -1.2, 2.4, 6.0), 2, 2, edges=(-9.0, 2.6))
       _, data, _ = self.display_messages(i, updated_161=True)[0]
       values = decode("CCNC_0x161", 0x161, data.hex())
       for key in ("LANELINE_LEFT_POSITION", "LANELINE_RIGHT_POSITION", "LANE_RIGHT", "LANE_HIGHLIGHT"):
@@ -318,7 +409,7 @@ class TestCcncSourceTiming(unittest.TestCase):
         self.assertEqual(values["LCA_RIGHT_ARROW"], 2)
         self.assertIsNotNone(self.controller.ccnc_display.target)
 
-  def test_blinker_cancel_resets_active_display(self):
+  def test_blinker_cancel_clears_published_display(self):
     self.cc.latActive = True
     self.cs.out.rightBlinker = True
     self.controller.ccnc_model = LaneModelSample(1.0, (-5.4, -1.8, 1.8, 5.4), 2, 2, edges=(-9.0, 9.0))
@@ -329,7 +420,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     _, data, _ = self.display_messages(1, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
     self.assertEqual(values["LANE_RIGHT"], self.msg_161["LANE_RIGHT"])
-    self.assertIsNone(self.controller.ccnc_display.target)
+    self.assertIsNone(self.controller.ccnc_display.values)
 
   def test_boot_first_display_frames_are_captured_in_either_order(self):
     cp = SimpleNamespace(flags=HyundaiFlags.CANFD | HyundaiFlags.CCNC,

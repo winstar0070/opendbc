@@ -10,6 +10,112 @@ def sample(t, offset=0.0, state=0, direction=0, lanes=None, edges=(-9.0, 9.0)):
 
 
 class TestModelLanes(unittest.TestCase):
+  def test_in_window_out_of_order_cancel_does_not_unlock_target(self):
+    display = CcncLaneDisplay()
+    display.update(sample(1.05, state=2, direction=1), now=1.05)
+    self.assertIsNone(display.update(sample(1.1, state=2, direction=1, lanes=()), now=1.1))
+    self.assertIsNone(display.update(sample(1.15, state=2, direction=1), now=1.15))
+    # Age 100 ms passes freshness, but this off metadata predates the last
+    # accepted active metadata and cannot prove that the maneuver ended.
+    self.assertIsNone(display.update(sample(1.1, state=0), now=1.2))
+    self.assertIsNone(display.update(sample(1.25, state=2, direction=1), now=1.25))
+    display.update(sample(1.3, state=0), now=1.3)
+    self.assertEqual(display.update(sample(1.35, state=2, direction=1), now=1.35)['LANE_LEFT'], 1)
+
+  def test_clock_rollback_requires_reset_before_a_new_maneuver(self):
+    display = CcncLaneDisplay()
+    display.update(sample(2., state=2, direction=1), now=2.)
+    self.assertIsNone(display.update(sample(1., state=0), now=1.))
+    self.assertIsNone(display.update(sample(1.05, state=2, direction=1), now=1.05))
+    display.reset()
+    self.assertEqual(display.update(sample(1.1, state=2, direction=1), now=1.1)['LANE_LEFT'], 1)
+
+  def test_missing_sample_without_a_trustworthy_clock_does_not_rearm(self):
+    for now in (None, float('nan'), .5):
+      with self.subTest(now=now):
+        display = CcncLaneDisplay()
+        display.update(sample(1., state=2, direction=1), now=1.)
+        self.assertIsNone(display.update(None, now=now))
+        self.assertIsNone(display.update(sample(1.1, state=2, direction=1), now=1.1))
+
+  def test_nonfinite_clock_or_sample_cannot_end_the_maneuver(self):
+    for timestamp, now in ((1.05, float('nan')), (float('nan'), 1.05)):
+      with self.subTest(timestamp=timestamp, now=now):
+        display = CcncLaneDisplay()
+        display.update(sample(1., state=2, direction=1), now=1.)
+        self.assertIsNone(display.update(sample(timestamp, state=0), now=now))
+        self.assertIsNone(display.update(sample(1.1, state=2, direction=1), now=1.1))
+
+  def test_ego_quality_loss_does_not_reacquire_next_lane_during_same_change(self):
+    for direction in (1, 2):
+      with self.subTest(direction=direction):
+        display = CcncLaneDisplay()
+        self.assertIsNotNone(display.update(sample(1., state=2, direction=direction)))
+        # The model loses ego boundaries while moving, then reindexes around
+        # the destination lane. Its new adjacent lane is not our old target.
+        self.assertIsNone(display.update(sample(1.4, state=2, direction=direction, lanes=(None,) * 4)))
+        self.assertIsNone(display.update(sample(1.45, state=2, direction=direction)))
+        self.assertIsNone(display.update(sample(1.5, state=3, direction=direction)))
+        display.update(sample(1.55, state=0))
+        restarted = display.update(sample(1.6, state=2, direction=direction))
+        self.assertEqual(restarted['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+
+  def test_brief_ego_quality_loss_recovers_the_existing_target(self):
+    for direction in (1, 2):
+      with self.subTest(direction=direction):
+        display = CcncLaneDisplay()
+        self.assertIsNotNone(display.update(sample(1., state=2, direction=direction)))
+        lanes = [-5.4, -1.8, 1.8, 5.4]
+        # The far ego boundary drops below confidence while the original
+        # target pair remains measured, as in f8/5's 50 ms quality dip.
+        lanes[2 if direction == 1 else 1] = None
+        self.assertIsNone(display.update(sample(1.05, state=2, direction=direction, lanes=tuple(lanes))))
+        recovered = display.update(sample(1.1, offset=.03, state=2, direction=direction))
+        self.assertIsNotNone(recovered)
+        self.assertEqual(recovered['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+
+  def test_repeated_ego_loss_expires_the_original_association(self):
+    display = CcncLaneDisplay()
+    display.update(sample(1., state=2, direction=1))
+    for i in range(1, 8):
+      self.assertIsNone(display.update(sample(1. + i * .05, state=2, direction=1, lanes=(None,) * 4)))
+    self.assertIsNone(display.update(sample(1.4, state=2, direction=1)))
+
+  def test_invalid_sample_does_not_rearm_an_active_change(self):
+    for bad in (sample(1.05, state=2, direction=1, lanes=()), sample(float('nan'), state=2, direction=1)):
+      with self.subTest(sample=bad):
+        display = CcncLaneDisplay()
+        self.assertIsNotNone(display.update(sample(1., state=2, direction=1)))
+        self.assertIsNone(display.update(bad))
+        self.assertIsNone(display.update(sample(1.1, state=2, direction=1)))
+
+  def test_timestamp_discontinuity_does_not_rearm_an_active_change(self):
+    for timestamp in (1.3, .5):
+      with self.subTest(timestamp=timestamp):
+        display = CcncLaneDisplay()
+        self.assertIsNotNone(display.update(sample(1., state=2, direction=1)))
+        self.assertIsNone(display.update(sample(timestamp, state=2, direction=1)))
+        self.assertIsNone(display.update(sample(timestamp + .05, state=2, direction=1)))
+
+  def test_cancel_with_invalid_geometry_allows_a_new_change(self):
+    display = CcncLaneDisplay()
+    display.update(sample(1., state=2, direction=1))
+    self.assertIsNone(display.update(sample(1.05, state=2, direction=1, lanes=(None,) * 4)))
+    self.assertIsNone(display.update(sample(1.1, state=1, direction=1, lanes=(None,) * 4)))
+    self.assertEqual(display.update(sample(1.15, state=2, direction=1))['LANE_LEFT'], 1)
+
+  def test_direction_change_after_ego_loss_can_acquire_its_own_target(self):
+    display = CcncLaneDisplay()
+    display.update(sample(1., state=2, direction=1))
+    self.assertIsNone(display.update(sample(1.05, state=2, direction=1, lanes=(None,) * 4)))
+    self.assertEqual(display.update(sample(1.1, state=2, direction=2))['LANE_RIGHT'], 1)
+
+  def test_pending_target_is_not_rebased_after_ego_loss(self):
+    display = CcncLaneDisplay()
+    self.assertIsNone(display.update(sample(1., state=2, direction=1, lanes=(None, -.1, 3.5, 7.1))))
+    self.assertIsNone(display.update(sample(1.05, state=2, direction=1, lanes=(None,) * 4)))
+    self.assertIsNone(display.update(sample(1.1, state=2, direction=1, lanes=(-5.25, -1.65, 1.95, 5.55))))
+
   def test_camera_reader_rejects_unusable_geometry(self):
     camera = {'Info_LftLnPosVal': -1.8, 'Info_RtLnPosVal': 1.8, 'Info_LftLnQualSta': 3, 'Info_RtLnQualSta': 3}
     self.assertEqual(read_camera_lanes(camera, 1_000_000_000, 1_000_000_000)['LANELINE_LEFT_POSITION'], 15)

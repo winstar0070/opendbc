@@ -238,7 +238,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
                                (model.direction == 2 and CS.out.rightBlinker and not CS.out.leftBlinker)))
           changing = (model is not None and model.state in (2, 3) and matching_blinker and
                       CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS)
-          lane_values = self.ccnc_display.update(model if changing else None)
+          # Lamp/control eligibility only gates publication. Missing model data
+          # must not masquerade as a cancellation and rearm target selection.
+          lane_values = self.ccnc_display.update(model, eligible=changing, now=now_nanos * 1e-9)
           # Baseline ccNC animation follows real lamps and stock camera lanes,
           # independently of model/automatic lane-change availability.
           if (self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS and

@@ -80,6 +80,7 @@ class CcncLaneDisplay:
 
   def reset(self):
     self.timestamp = None
+    self.metadata_timestamp = None
     self.ego = None
     self.target = None
     self.target_decided = False
@@ -88,20 +89,70 @@ class CcncLaneDisplay:
     self.direction = 0
     self.crossed = False
     self.incoming_visible = False
+    self.geometry_values = None
     self.values = None
 
-  def update(self, sample: LaneModelSample | None):
-    if sample is None or len(sample.lanes) != 4 or not math.isfinite(sample.timestamp):
-      self.reset()
+  def _invalidate(self, direction):
+    metadata_timestamp = self.metadata_timestamp
+    self.reset()
+    self.metadata_timestamp = metadata_timestamp
+    # Geometry loss can hide a model lane-index switch. Without the original
+    # association, the next adjacent pair may be one lane beyond our target.
+    # Keep this change rejected until it ends or its direction changes.
+    self.direction = direction
+    self.target_decided = bool(direction)
+
+  def _pause(self, now):
+    if (self.timestamp is None or now is None or not math.isfinite(now) or
+        not 0 <= now - self.timestamp <= 0.25):
+      self._invalidate(self.direction)
+    self.values = None
+    return None
+
+  def update(self, sample: LaneModelSample | None, *, eligible=True, now=None):
+    """Track fresh measurements independently from permission to display them."""
+    if sample is None:
+      return self._pause(now)
+    if now is not None:
+      if not math.isfinite(now) or not math.isfinite(sample.timestamp):
+        return self._pause(None)
+      if not 0 <= now - sample.timestamp <= 0.25:
+        # Stale/future metadata is not evidence that this maneuver ended.
+        return self._pause(now)
+    if math.isfinite(sample.timestamp):
+      if self.metadata_timestamp is not None and sample.timestamp < self.metadata_timestamp:
+        if now is not None or self.direction:
+          # A fresh-age sample can still arrive out of order. Geometry loss
+          # must not let older cancellation metadata unlock this maneuver.
+          return self._pause(None)
+        # Legacy offline idle filtering may start a new clock without a HUD
+        # clock, but never while an active maneuver association is retained.
+        self.reset()
+      self.metadata_timestamp = sample.timestamp
+    values = self._update(sample)
+    self.values = values if eligible else None
+    return self.values
+
+  def _update(self, sample: LaneModelSample):
+    direction = sample.direction if sample.state in (2, 3) and sample.direction in (1, 2) else 0
+    if len(sample.lanes) != 4 or not math.isfinite(sample.timestamp):
+      self._invalidate(direction)
       return None
     ego = lane_pair(sample.lanes, 1)
     if ego is None:
-      self.reset()
+      if (self.timestamp is not None and direction == self.direction and
+          0 <= sample.timestamp - self.timestamp <= 0.25):
+        # A brief ego-confidence dip does not discard the original target.
+        # Publish nothing while missing; on recovery the existing target
+        # matching and expiry checks still apply. Do not advance this clock.
+        self.geometry_values = None
+      else:
+        self._invalidate(direction)
       return None
     if self.timestamp is not None and sample.timestamp == self.timestamp:
-      return self.values
+      return self.geometry_values
     if self.timestamp is not None and not 0 < sample.timestamp - self.timestamp <= 0.25:
-      self.reset()
+      self._invalidate(direction)
     dt = 0.05 if self.timestamp is None else sample.timestamp - self.timestamp
     self.timestamp = sample.timestamp
 
@@ -110,7 +161,6 @@ class CcncLaneDisplay:
     if self.ego is not None and abs(sum(ego) - sum(self.ego)) > (ego[1] - ego[0]):
       self.ego = None
     self.ego = smooth_pair(self.ego, ego, dt)
-    direction = sample.direction if sample.state in (2, 3) and sample.direction in (1, 2) else 0
     if direction != self.direction:
       self.direction = direction
       self.crossed = False
@@ -142,7 +192,7 @@ class CcncLaneDisplay:
         self.target = None
         self.crossed = False
       elif not matched:
-        self.values = None
+        self.geometry_values = None
         return None
       else:
         self.target = smooth_pair(self.target, nearest, dt)
@@ -154,7 +204,7 @@ class CcncLaneDisplay:
       # the target has been rejected for this change.
       self.target = None
       self.crossed = False
-      self.values = None
+      self.geometry_values = None
       return None
 
     if self.target is not None:
@@ -186,11 +236,11 @@ class CcncLaneDisplay:
         right_color = 1
       elif direction == 2 and not self.incoming_visible:
         left_color = 1
-    self.values = {
+    self.geometry_values = {
       'LANELINE_LEFT_POSITION': left, 'LANELINE_RIGHT_POSITION': right,
       'LANELINE_LEFT': left_color, 'LANELINE_RIGHT': right_color,
       'LANE_LEFT': int(active and not filled and direction == 1),
       'LANE_RIGHT': int(active and not filled and direction == 2),
       'LANE_HIGHLIGHT': int(filled), 'LANE_HIGHLIGHT_DISTANCE': 60.0 if filled else 0.0,
     }
-    return self.values
+    return self.geometry_values
