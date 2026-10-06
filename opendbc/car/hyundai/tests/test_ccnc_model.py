@@ -2,7 +2,7 @@ import unittest
 import math
 from types import SimpleNamespace
 
-from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample, read_model_lanes
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, LaneModelSample, read_model_lanes, read_camera_lanes
 
 
 def sample(t, offset=0.0, state=0, direction=0, lanes=None, edges=(-9.0, 9.0)):
@@ -10,6 +10,32 @@ def sample(t, offset=0.0, state=0, direction=0, lanes=None, edges=(-9.0, 9.0)):
 
 
 class TestModelLanes(unittest.TestCase):
+  def test_camera_reader_rejects_unusable_geometry(self):
+    camera = {'Info_LftLnPosVal': -1.8, 'Info_RtLnPosVal': 1.8, 'Info_LftLnQualSta': 3, 'Info_RtLnQualSta': 3}
+    self.assertEqual(read_camera_lanes(camera, 1_000_000_000, 1_000_000_000)['LANELINE_LEFT_POSITION'], 15)
+    for changes in ({'Info_LftLnPosVal': None}, {'Info_RtLnPosVal': float('nan')},
+                    {'Info_LftLnPosVal': float('inf')}, {'Info_RtLnQualSta': 0},
+                    {'Info_RtLnPosVal': -1.8}, {'Info_RtLnPosVal': 9.}):
+      self.assertIsNone(read_camera_lanes(camera | changes, 1_000_000_000, 1_000_000_000))
+
+  def test_target_loss_timeout_does_not_select_a_new_lane(self):
+    display = CcncLaneDisplay()
+    display.update(sample(1., state=2, direction=1))
+    for i in range(1, 8):
+      self.assertIsNone(display.update(sample(1. + i * .05, state=2, direction=1, lanes=(None, -1.8, 1.8, 5.4))))
+    self.assertIsNone(display.update(sample(1.4, state=2, direction=1)))
+
+  def test_temporary_target_loss_recovers_original_lane(self):
+    for direction in (1, 2):
+      display = CcncLaneDisplay()
+      self.assertIsNotNone(display.update(sample(1., state=2, direction=direction)))
+      lanes = [-5.4, -1.8, 1.8, 5.4]
+      lanes[0 if direction == 1 else 3] = None
+      self.assertIsNone(display.update(sample(1.05, state=2, direction=direction, lanes=tuple(lanes))))
+      recovered = display.update(sample(1.1, state=2, direction=direction))
+      self.assertIsNotNone(recovered)
+      self.assertEqual(recovered['LANE_LEFT' if direction == 1 else 'LANE_RIGHT'], 1)
+
   def test_crossing_jitter_does_not_toggle_fill_in_either_direction(self):
     for direction in (1, 2):
       display = CcncLaneDisplay()

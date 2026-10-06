@@ -31,6 +31,21 @@ def read_model_lanes(model, timestamp: float) -> LaneModelSample | None:
   return LaneModelSample(timestamp, tuple(lanes), model.meta.laneChangeState.raw, model.meta.laneChangeDirection.raw, tuple(edges))
 
 
+def read_camera_lanes(camera, timestamp_ns, now_ns):
+  """Normalize measured stock camera boundaries for the baseline animation."""
+  if timestamp_ns <= 0 or not 0 <= now_ns - timestamp_ns <= 250_000_000:
+    return None
+  left, right = camera.get('Info_LftLnPosVal'), camera.get('Info_RtLnPosVal')
+  if (camera.get('Info_LftLnQualSta') not in (2, 3) or camera.get('Info_RtLnQualSta') not in (2, 3) or
+      left is None or right is None or not math.isfinite(left) or not math.isfinite(right) or
+      not 2.4 <= right - left <= 4.8):
+    return None
+  position = max(0, min(30, round(-30 * left / (right - left))))
+  return {'LANELINE_LEFT_POSITION': position, 'LANELINE_RIGHT_POSITION': 30 - position,
+          'LANELINE_LEFT': 6, 'LANELINE_RIGHT': 6, 'LANELINE_CURVATURE': 15,
+          'LANE_LEFT': 0, 'LANE_RIGHT': 0, 'LANE_HIGHLIGHT': 0, 'LANE_HIGHLIGHT_DISTANCE': 0.0}
+
+
 def target_within_road(pair, direction, edges):
   if pair is None or direction not in (1, 2):
     return False
@@ -68,6 +83,7 @@ class CcncLaneDisplay:
     self.ego = None
     self.target = None
     self.target_decided = False
+    self.target_seen = None
     self.target_hint = None
     self.direction = 0
     self.crossed = False
@@ -113,16 +129,24 @@ class CcncLaneDisplay:
         # Do not acquire the next lane if model indices switched while waiting.
         same_target = abs(sum(candidate) / 2 - self.target_hint) <= 0.75
         self.target = candidate if same_target and target_within_road(candidate, direction, sample.edges) else None
+        self.target_seen = sample.timestamp if self.target is not None else None
     elif self.target is not None:
       candidates = [p for i in range(3) if (p := lane_pair(sample.lanes, i)) is not None]
       nearest = min(candidates, key=lambda p: abs(sum(p) - sum(self.target)))
-      # Reject a lost/replaced boundary rather than animating to an unrelated lane.
-      if (not target_within_road(nearest, direction, sample.edges) or
-          max(abs(a - b) for a, b in zip(nearest, self.target, strict=True)) > 0.75):
+      matched = max(abs(a - b) for a, b in zip(nearest, self.target, strict=True)) <= 0.75
+      # Keep the last target briefly for association, but publish no model
+      # geometry while it is missing. Never reacquire a neighbouring lane.
+      if (not target_within_road(self.target, direction, sample.edges) or
+          (matched and not target_within_road(nearest, direction, sample.edges)) or
+          sample.timestamp - self.target_seen > 0.25):
         self.target = None
         self.crossed = False
+      elif not matched:
+        self.values = None
+        return None
       else:
         self.target = smooth_pair(self.target, nearest, dt)
+        self.target_seen = sample.timestamp
 
     if direction and not target_within_road(self.target, direction, sample.edges):
       # Do not fall through to model ego geometry: even white model lines could

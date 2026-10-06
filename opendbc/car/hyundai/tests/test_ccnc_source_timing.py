@@ -96,6 +96,55 @@ class TestCcncSourceTiming(unittest.TestCase):
                                                 now_nanos=1_000_000_000 + frame * 10_000_000)
     return [msg for msg in messages if msg[0] in (0x161, 0x162)]
 
+  def test_native_adjacent_and_rear_objects_survive_without_radar(self):
+    for side in ('LEFT', 'RIGHT'):
+      self.cs.msg_162.update({f'LEAD_{side}': 4, f'LEAD_{side}_DISTANCE': 12., f'LEAD_{side}_LATERAL': 3.5,
+                             f'LEAD_{side}_REAR_STATUS': 2, f'LEAD_{side}_REAR_DISTANCE': 5.,
+                             f'LEAD_{side}_REAR_LATERAL': 3.5})
+    msg = self.display_messages(0, updated_162=True)[0]
+    values = decode('CCNC_0x162', 0x162, msg[1].hex())
+    for key, value in self.cs.msg_162.items():
+      if key.startswith(('LEAD_LEFT', 'LEAD_RIGHT')):
+        self.assertAlmostEqual(values[key], value)
+
+  def test_camera_animation_without_model_and_with_missing_outer_lane(self):
+    self.cs.out.leftBlinker = True
+    self.cc.latActive = True
+    for model in (None, LaneModelSample(1., (None, -1.8, 1.8, 5.4), 2, 1)):
+      self.controller.ccnc_model = model
+      self.cs.msg_1b5.update({"Info_LftLnPosVal": -1.2, "Info_RtLnPosVal": 2.4})
+      msg = self.display_messages(0, updated_161=True)[0]
+      values = decode('CCNC_0x161', 0x161, msg[1].hex())
+      self.assertEqual((values['LANELINE_LEFT_POSITION'], values['LANELINE_RIGHT_POSITION']), (10, 20))
+      self.assertEqual((values['LCA_LEFT_ARROW'], values['LCA_RIGHT_ARROW']), (2, 0))
+      self.assertEqual(values['LANELINE_LEFT'], 6)
+
+  def test_camera_fallback_follows_motion_and_clears_with_blinker(self):
+    for direction in (1, 2):
+      self.cs.out.leftBlinker, self.cs.out.rightBlinker = direction == 1, direction == 2
+      for frame, left in enumerate((-1.8, -1.2, -0.6)):
+        self.cs.msg_1b5.update({'Info_LftLnPosVal': left, 'Info_RtLnPosVal': left + 3.6})
+        msg = self.display_messages(frame, updated_161=True)[0]
+        values = decode('CCNC_0x161', 0x161, msg[1].hex())
+        self.assertEqual(values['LANELINE_LEFT_POSITION'], (15, 10, 5)[frame])
+        self.assertEqual(values['LANE_HIGHLIGHT'], 0)
+      for speed, lfa, left, right in ((0., 2, True, False), (8., 2, True, False),
+                                    (20., 0, True, False), (20., 2, True, True), (20., 2, False, False)):
+        self.cs.out.vEgo, self.controller.lfa_icon = speed, lfa
+        self.cs.out.leftBlinker, self.cs.out.rightBlinker = left, right
+        msg = self.display_messages(0, updated_161=True)[0]
+        values = decode('CCNC_0x161', 0x161, msg[1].hex())
+        self.assertEqual((values['LCA_LEFT_ARROW'], values['LCA_RIGHT_ARROW']), (0, 0))
+      self.cs.out.vEgo, self.controller.lfa_icon = 20., 2
+
+  def test_camera_fallback_requires_fresh_valid_geometry(self):
+    self.cs.out.leftBlinker = True
+    for camera_time, quality in ((0, 3), (700_000_000, 3), (1_100_000_000, 3), (1_000_000_000, 0)):
+      self.cs.ccnc_camera_time_nanos = camera_time
+      self.cs.msg_1b5['Info_LftLnQualSta'] = quality
+      msg = self.display_messages(0, updated_161=True)[0]
+      self.assertEqual(decode('CCNC_0x161', 0x161, msg[1].hex())['LCA_LEFT_ARROW'], 0)
+
   def test_adjacent_objects_pack_without_mutating_stock_or_requiring_blinkers(self):
     self.cs.msg_162.update({'LEAD_LEFT': 0, 'LEAD_RIGHT': 0})
     stock = self.cs.msg_162.copy()
@@ -154,6 +203,7 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.assertEqual((values["LANELINE_LEFT_POSITION"], values["LANELINE_RIGHT_POSITION"]), (10, 20))
     self.assertEqual(values["LANELINE_CURVATURE"], self.msg_161["LANELINE_CURVATURE"])
     self.controller.ccnc_model = None
+    self.cs.ccnc_camera_time_nanos = 0  # Both sources absent: preserve stock.
     self.cs.msg_161 = copy.copy(self.msg_161)
     _, data, _ = self.display_messages(1, updated_161=True)[0]
     values = decode("CCNC_0x161", 0x161, data.hex())
@@ -183,6 +233,8 @@ class TestCcncSourceTiming(unittest.TestCase):
     self.assertEqual(decode("CCNC_0x162", 0x162, messages[1][1].hex())["VIBRATE"], 1)
 
   def test_only_confirmed_lane_change_overrides_stock_geometry(self):
+    # Isolate model enhancement from the independent stock camera fallback.
+    self.cs.ccnc_camera_time_nanos = 0
     # Model/requested blinkers alone must not activate the custom display.
     self.cc.leftBlinker = True
     cases = [
@@ -213,7 +265,8 @@ class TestCcncSourceTiming(unittest.TestCase):
             self.assertEqual(values[key], self.msg_161[key])
           self.assertEqual((values["LCA_LEFT_ARROW"], values["LCA_RIGHT_ARROW"]), (0, 0))
 
-  def test_arrows_clear_when_confirmed_change_becomes_turn_or_hazards(self):
+  def test_model_arrows_clear_without_camera_when_change_ends(self):
+    self.cs.ccnc_camera_time_nanos = 0
     self.cc.latActive = True
     for direction in (1, 2):
       for hazards in (False, True):
@@ -232,7 +285,8 @@ class TestCcncSourceTiming(unittest.TestCase):
             if frame == 1:
               self.assertEqual((values["LCA_LEFT_ICON"], values["LCA_RIGHT_ICON"]), (4, 4))
 
-  def test_road_edge_blocks_right_turn_display_despite_model_change_state(self):
+  def test_road_edge_blocks_model_enhancement(self):
+    self.cs.ccnc_camera_time_nanos = 0
     self.cc.latActive = True
     self.cs.out.rightBlinker = True
     for i in range(10):

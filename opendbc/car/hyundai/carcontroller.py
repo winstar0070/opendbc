@@ -4,7 +4,7 @@ from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, structs
 from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_avoidance
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
-from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay
+from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, read_camera_lanes
 from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
@@ -224,6 +224,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
       if CS.ccnc_0x161_updated or CS.ccnc_0x162_updated:
         lane_values = None
         object_values = None
+        camera_values = None
         if CS.ccnc_0x162_updated:
           object_values = self.ccnc_object_display.update(self.ccnc_radar, self.ccnc_object_lanes, now_nanos * 1e-9)
         if CS.ccnc_0x161_updated:
@@ -236,10 +237,16 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
           changing = (model is not None and model.state in (2, 3) and matching_blinker and
                       CC.latActive and self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS)
           lane_values = self.ccnc_display.update(model if changing else None)
+          # Baseline ccNC animation follows real lamps and stock camera lanes,
+          # independently of model/automatic lane-change availability.
+          if (self.lfa_icon and CS.out.vEgo >= 20 * CV.MPH_TO_MS and
+              bool(CS.out.leftBlinker) != bool(CS.out.rightBlinker)):
+            camera_values = read_camera_lanes(CS.msg_1b5, CS.ccnc_camera_time_nanos, now_nanos)
+
         can_sends.extend(hyundaicanfd.create_ccnc(self.packer, self.CAN, self.CP.openpilotLongitudinalControl, CC.enabled, CC.hudControl, CS.out.leftBlinker,
                                                   CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
-                                                  lane_values=lane_values, object_values=object_values))
+                                                  lane_values=lane_values, object_values=object_values, camera_values=camera_values))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

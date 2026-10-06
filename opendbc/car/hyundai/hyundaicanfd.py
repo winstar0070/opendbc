@@ -127,7 +127,7 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
-                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None):
+                is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None, camera_values=None):
   # Do not retain synthesized display fields in CarState's stock snapshots.
   # Each new frame must fall back to the actual camera data after expiry/loss.
   msg_161, msg_162 = msg_161.copy(), msg_162.copy()
@@ -153,11 +153,13 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     msg_161["SOUNDS_4"] = 0
 
   LANE_CHANGE_SPEED_MIN = 8.9408  # 20 mph
-  # Use the same active model lane-change result as lane animation.
-  # Turn signals alone (including hazards) must not request lane-change arrows.
+  # Prefer model enhancement; fresh stock camera geometry is the baseline.
+  model_values = lane_values
+  lane_values = lane_values if lane_values is not None else camera_values
   changing = (lfa_icon and lane_values is not None and out.vEgo >= LANE_CHANGE_SPEED_MIN and
               bool(left_blinker) != bool(right_blinker) and
-              any(lane_values.get(key, 0) for key in ("LANE_LEFT", "LANE_RIGHT", "LANE_HIGHLIGHT")))
+              (camera_values is not None or
+               any(lane_values.get(key, 0) for key in ("LANE_LEFT", "LANE_RIGHT", "LANE_HIGHLIGHT"))))
 
   # Stock lane geometry remains the fallback when model data is unavailable.
   # Model coordinates affect only cluster display fields, never vehicle control.
@@ -177,7 +179,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     "DAW_ICON": 0,
     "LKA_ICON": 0,
     "LFA_ICON": 2 if lfa_icon else 0,
-    "CENTERLINE": 0 if lane_values is not None else msg_161["CENTERLINE"],
+    "CENTERLINE": 0 if model_values is not None else 1 if camera_values is not None else msg_161["CENTERLINE"],
     "LCA_LEFT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN
                       else 1 if out.leftBlindspot else 2 if changing else 4),
     "LCA_RIGHT_ICON": (0 if not lfa_icon or out.vEgo < LANE_CHANGE_SPEED_MIN
