@@ -12,6 +12,8 @@ for _slot in SLOTS:
                          _prefix + "_DISTANCE", _prefix + "_LATERAL")
 PROBE_FIELDS = tuple(field for signals in SLOT_SIGNALS.values() for field in signals)
 FIELDS = frozenset(("token", "issued_ns", "expires_ns", "slot", "status", "distance", "lateral"))
+MULTI_FIELDS = frozenset(("token", "issued_ns", "expires_ns", "markers"))
+MARKER_FIELDS = frozenset(("slot", "status", "distance", "lateral", "end_distance"))
 
 
 def _token(request):
@@ -19,24 +21,43 @@ def _token(request):
   return token.lower() if type(token) is str and re.fullmatch(r"[0-9a-fA-F]{32}", token) else None
 
 
-def _parse(request):
-  if type(request) is not dict or request.keys() != FIELDS:
+def _parse_marker(marker):
+  if type(marker) is not dict or marker.keys() != MARKER_FIELDS:
     return None
-  token = _token(request)
-  issued, expires = request["issued_ns"], request["expires_ns"]
-  slot, status = request["slot"], request["status"]
-  if (token is None or type(issued) is not int or type(expires) is not int or issued < 0 or
-      not 0 < expires - issued <= MAX_LEASE_NS or type(slot) is not str or slot not in SLOTS or
-      type(status) is not int or not 1 <= status <= (4 if slot.endswith("_REAR") else 2)):
+  slot, status = marker["slot"], marker["status"]
+  if (type(slot) is not str or slot not in SLOTS or type(status) is not int or
+      not 1 <= status <= (4 if slot.endswith("_REAR") else 2)):
     return None
   values = []
-  for key, low, high in (("distance", .1, 25.5), ("lateral", 0., 12.7)):
-    value = request[key]
+  for key, low, high in (("distance", .1, 25.5), ("lateral", 0., 12.7), ("end_distance", .1, 25.5)):
+    value = marker[key]
     # Range-check before float conversion also rejects arbitrarily large ints.
     if type(value) not in (int, float) or not low <= value <= high or not math.isfinite(value):
       return None
     values.append(float(value))
-  return token, issued, expires, slot, status, *values
+  return slot, status, *values
+
+
+def _parse(request):
+  if type(request) is not dict or request.keys() not in (FIELDS, MULTI_FIELDS):
+    return None
+  token = _token(request)
+  issued, expires = request["issued_ns"], request["expires_ns"]
+  if (token is None or type(issued) is not int or type(expires) is not int or issued < 0 or
+      not 0 < expires - issued <= MAX_LEASE_NS):
+    return None
+  if request.keys() == FIELDS:
+    markers = [{key: request[key] for key in ("slot", "status", "distance", "lateral")} | {"end_distance": request["distance"]}]
+  else:
+    markers = request["markers"]
+  if type(markers) is not list or not 1 <= len(markers) <= len(SLOTS):
+    return None
+  parsed = tuple(_parse_marker(marker) for marker in markers)
+  if any(marker is None for marker in parsed) or len({marker[0] for marker in parsed}) != len(parsed):
+    return None
+  # Freeze nested payloads as well as lease metadata; later dict/list changes
+  # must retire the nonce, never alter or extend a running diagnostic.
+  return token, issued, expires, parsed
 
 
 class CcncSlotProbe:
@@ -65,7 +86,7 @@ class CcncSlotProbe:
     parsed = _parse(request)
     if parsed is None:
       return self._invalidate(request)
-    token, issued, expires, slot, status, distance, lateral = parsed
+    token, issued, expires, markers = parsed
     if not issued <= now_ns < expires:
       return self._invalidate(request)
     if self._active is not None and token == self._active[0]:
@@ -80,7 +101,10 @@ class CcncSlotProbe:
       self._active = parsed
     if not all(gate is True for gate in (parked, stationary, controls_inactive, can_valid, display_fresh)):
       return self._invalidate(request)
-    # Isolate the chosen marker: overwrite every object slot, not only status.
+    # Isolate the chosen markers: overwrite every object slot, not only status.
     values = dict.fromkeys(PROBE_FIELDS, 0.)
-    values.update(zip(SLOT_SIGNALS[slot], (status, distance, lateral), strict=True))
+    fraction = (now_ns - issued) / (expires - issued)
+    for slot, status, distance, lateral, end_distance in markers:
+      position = distance + (end_distance - distance) * fraction
+      values.update(zip(SLOT_SIGNALS[slot], (status, position, lateral), strict=True))
     return values

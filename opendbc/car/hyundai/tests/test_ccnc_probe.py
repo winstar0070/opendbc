@@ -13,6 +13,63 @@ class TestCcncSlotProbe(unittest.TestCase):
   def update(self, request=None, now=1_000_000_000, **gates):
     return self.probe.update(self.request if request is None else request, now_ns=now, **(self.gates | gates))
 
+  def multi_request(self):
+    return dict(token='d' * 32, issued_ns=1_000_000_000, expires_ns=3_000_000_000,
+                markers=[dict(slot=slot, status=2, distance=10., lateral=float(i), end_distance=20.)
+                         for i, slot in enumerate(SLOT_SIGNALS)])
+
+  def test_multi_six_slots_interpolate_within_original_lease(self):
+    request = self.multi_request()
+    for now, distance in ((1_000_000_000, 10.), (1_500_000_000, 12.5), (2_000_000_000, 15.), (2_500_000_000, 17.5)):
+      values = self.update(request, now=now)
+      self.assertEqual(set(values), set(PROBE_FIELDS))
+      for i, fields in enumerate(SLOT_SIGNALS.values()):
+        self.assertEqual(values[fields[0]], 2)
+        self.assertEqual(values[fields[1]], distance)
+        self.assertEqual(values[fields[2]], float(i))
+    self.assertIsNone(self.update(request, now=3_000_000_000))
+    request.update(issued_ns=3_000_000_001, expires_ns=4_000_000_000)
+    self.assertIsNone(self.update(request, now=3_000_000_001))
+
+  def test_multi_single_marker_decreases_and_clears_other_slots(self):
+    request = self.multi_request()
+    request['markers'] = [dict(slot='ALT', status=1, distance=25.5, lateral=12.7, end_distance=.1)]
+    values = self.update(request, now=2_000_000_000)
+    self.assertAlmostEqual(values['LEAD_ALT_DISTANCE'], 12.8)
+    self.assertEqual(values['LEAD_ALT'], 1)
+    self.assertEqual(values['LEAD_ALT_LATERAL'], 12.7)
+    self.assertTrue(all(v == 0 for k, v in values.items() if k not in SLOT_SIGNALS['ALT']))
+
+  def test_multi_payload_mutation_and_unsafe_state_retire_token(self):
+    for kind in ('mutate', 'reorder', 'unsafe', 'cancel'):
+      with self.subTest(kind=kind):
+        self.probe = CcncSlotProbe()
+        request = self.multi_request()
+        self.assertIsNotNone(self.update(request))
+        if kind == 'mutate':
+          request['markers'][0]['end_distance'] = 21.
+        elif kind == 'reorder':
+          request['markers'].reverse()
+        elif kind == 'cancel':
+          self.probe.cancel()
+        gates = {'stationary': False} if kind == 'unsafe' else {}
+        self.assertIsNone(self.update(request, now=1_100_000_000, **gates))
+        self.assertIsNone(self.update(self.multi_request(), now=1_200_000_000))
+
+  def test_multi_malformed_collections_and_markers_fail_closed(self):
+    marker = dict(slot='LEFT', status=2, distance=1., lateral=1., end_distance=2.)
+    collections = [None, {}, (), 'bad', [], [marker] * 7, [marker, marker], [None], [marker | {'extra': 0}]]
+    collections.extend([{k: v for k, v in marker.items() if k != missing}] for missing in marker)
+    for key, values in {'slot': [None, [], 'unknown'], 'status': [True, 0, 3, 1.],
+                        'distance': [True, float('nan'), .09, 25.6], 'lateral': [False, float('inf'), -.1, 12.8],
+                        'end_distance': [True, float('nan'), float('inf'), 0., 25.6, '2', 10 ** 1000]}.items():
+      collections.extend([marker | {key: value}] for value in values)
+    for markers in collections:
+      with self.subTest(markers=markers):
+        request = self.multi_request() | {'markers': markers}
+        self.assertIsNone(CcncSlotProbe().update(request, now_ns=1_000_000_000, **self.gates))
+    self.assertIsNone(self.update(self.multi_request() | {'slot': 'LEFT'}))
+
   def test_all_slots_isolate_exactly_eighteen_object_fields(self):
     for slot in ('FRONT', 'ALT', 'LEFT', 'RIGHT', 'LEFT_REAR', 'RIGHT_REAR'):
       with self.subTest(slot=slot):

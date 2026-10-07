@@ -45,6 +45,41 @@ class TestCcncProbeIntegration(unittest.TestCase):
     parser.update([(1, [message])])
     return dict(parser.vl['CCNC_0x162'])
 
+  def demo_request(self):
+    return dict(token='d' * 32, issued_ns=1_000_000_000, expires_ns=3_000_000_000,
+                markers=[dict(slot=slot, status=2, distance=10., lateral=float(i), end_distance=20.)
+                         for i, slot in enumerate(SLOT_SIGNALS)])
+
+  def test_six_marker_motion_changes_only_162_objects_and_crc(self):
+    active, baseline = self.make_fixture(self.demo_request()), self.make_fixture()
+    original = copy.deepcopy((active.cs.msg_161, active.cs.msg_162))
+    for now, distance in ((1_000_000_000, 10.), (1_500_000_000, 12.5), (2_000_000_000, 15.)):
+      active.cs.ccnc_0x162_time_nanos = baseline.cs.ccnc_0x162_time_nanos = now
+      diagnostic, normal = self.send(active, now), self.send(baseline, now)
+      self.assertEqual([m for m in diagnostic if m[0] != 0x162], [m for m in normal if m[0] != 0x162])
+      decoded, before = self.values(diagnostic), self.values(normal)
+      for i, fields in enumerate(SLOT_SIGNALS.values()):
+        self.assertEqual(decoded[fields[0]], 2)
+        self.assertAlmostEqual(decoded[fields[1]], distance)
+        self.assertAlmostEqual(decoded[fields[2]], float(i))
+      self.assertEqual({k: v for k, v in decoded.items() if k not in (*PROBE_FIELDS, 'CHECKSUM')},
+                       {k: v for k, v in before.items() if k not in (*PROBE_FIELDS, 'CHECKSUM')})
+      for address, data, _ in diagnostic:
+        self.assertEqual(int.from_bytes(data[:2], 'little'), hkg_can_fd_checksum(address, None, data))
+      self.assertEqual((active.cs.msg_161, active.cs.msg_162), original)
+    active.cs.ccnc_0x162_time_nanos = baseline.cs.ccnc_0x162_time_nanos = 3_000_000_000
+    self.assertEqual(self.send(active, 3_000_000_000), self.send(baseline, 3_000_000_000))
+
+  def test_six_marker_unsafe_between_hud_frames_cannot_restart(self):
+    active, baseline = self.make_fixture(self.demo_request()), self.make_fixture()
+    self.send(active)
+    self.send(baseline)
+    active.cs.out.vEgo = baseline.cs.out.vEgo = .11
+    self.send(active, 1_010_000_000, updated=False)
+    self.send(baseline, 1_010_000_000, updated=False)
+    active.cs.out.vEgo = baseline.cs.out.vEgo = 0.
+    self.assertEqual(self.send(active, 1_020_000_000), self.send(baseline, 1_020_000_000))
+
   def test_every_slot_changes_only_object_fields_and_crc_all_packets_preserved(self):
     for slot, fields in SLOT_SIGNALS.items():
       with self.subTest(slot=slot):
