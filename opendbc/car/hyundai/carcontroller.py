@@ -1,3 +1,5 @@
+import math
+
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import Bus, DT_CTRL, make_tester_present_msg, structs
@@ -7,6 +9,7 @@ from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, read_camera_lanes
 from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, MAX_AGE
 from opendbc.car.hyundai.ccnc_radar import CcncRadarTracks
+from opendbc.car.hyundai.ccnc_probe import CcncSlotProbe
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
 from opendbc.car.interfaces import CarControllerBase
@@ -83,6 +86,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     self.ccnc_radar = None
     self.ccnc_raw_radar = CcncRadarTracks() if CP.carFingerprint in (CAR.HYUNDAI_SONATA_2024, CAR.HYUNDAI_SONATA_HEV_2024) else None
     self.ccnc_object_lanes = None
+    self.ccnc_probe = CcncSlotProbe()
+    self.ccnc_probe_request = None
 
   def update(self, CC, CC_SP, CS, now_nanos):
     EsccCarController.update(self, CS)
@@ -222,6 +227,20 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
 
     # LFA and HDA icons
     if ccnc_non_hda2:
+      # Evaluate every control call, including calls with no new HUD frame.
+      # A transient unsafe state retires the token rather than merely hiding it.
+      if not hasattr(self, "ccnc_probe"):
+        self.ccnc_probe = CcncSlotProbe()
+      speed = getattr(CS.out, "vEgo", None)
+      display_time = getattr(CS, "ccnc_0x162_time_nanos", 0)
+      display_fresh = (type(display_time) is int and type(now_nanos) is int and display_time > 0 and
+                       0 <= now_nanos - display_time <= 250_000_000)
+      probe_values = self.ccnc_probe.update(
+        getattr(self, "ccnc_probe_request", None), now_ns=now_nanos,
+        parked=getattr(CS.out, "gearShifter", None) == structs.CarState.GearShifter.park,
+        stationary=type(speed) in (int, float) and abs(speed) <= .1 and math.isfinite(speed),
+        controls_inactive=all(getattr(CC, name, None) is False for name in ("enabled", "latActive", "longActive")),
+        can_valid=getattr(CS.out, "canValid", None) is True, display_fresh=display_fresh)
       # Replay each blocked stock display frame on its source update to retain its cadence, counter, and phase.
       if CS.ccnc_0x161_updated or CS.ccnc_0x162_updated:
         lane_values = None
@@ -257,7 +276,8 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
                                                   lane_values=lane_values, object_values=object_values, camera_values=camera_values,
                                                   completion_hold=self.ccnc_display.completion_until is not None and lane_values is not None,
                                                   camera_fresh=CS.ccnc_camera_time_nanos > 0 and
-                                                  0 <= now_nanos - CS.ccnc_camera_time_nanos <= MAX_AGE * 1e9))
+                                                  0 <= now_nanos - CS.ccnc_camera_time_nanos <= MAX_AGE * 1e9,
+                                                  probe_values=probe_values))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 
