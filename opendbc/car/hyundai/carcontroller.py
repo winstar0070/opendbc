@@ -7,7 +7,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_a
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, read_camera_lanes
-from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, MAX_AGE
+from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, CcncTrafficDirection, MAX_AGE
 from opendbc.car.hyundai.ccnc_radar import CcncRadarTracks
 from opendbc.car.hyundai.ccnc_probe import CcncSlotProbe
 from opendbc.car.hyundai.hyundaicanfd import CanBus
@@ -83,6 +83,7 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
     # Immutable, freshness-checked model sample injected by card.py for the HUD only.
     self.ccnc_model = None
     self.ccnc_object_display = CcncObjectDisplay()
+    self.ccnc_traffic_direction = CcncTrafficDirection()
     self.ccnc_radar = None
     self.ccnc_raw_radar = CcncRadarTracks() if CP.carFingerprint in (CAR.HYUNDAI_SONATA_2024, CAR.HYUNDAI_SONATA_HEV_2024) else None
     self.ccnc_object_lanes = None
@@ -247,8 +248,11 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         object_values = None
         camera_values = None
         if CS.ccnc_0x162_updated:
+          radar = self.ccnc_radar
+          if hasattr(self, 'ccnc_traffic_direction'):
+            radar = self.ccnc_traffic_direction.update(radar, CS.out.vEgo, now_nanos * 1e-9)
           object_values = self.ccnc_object_display.update(
-            self.ccnc_radar, self.ccnc_object_lanes, now_nanos * 1e-9,
+            radar, self.ccnc_object_lanes, now_nanos * 1e-9,
             multiple_front=bool(CS.main_cruise_enabled and CS.msg_162['LEAD'] == 0 and CS.msg_162['LEAD_ALT'] == 0))
         if CS.ccnc_0x161_updated:
           model = self.ccnc_model

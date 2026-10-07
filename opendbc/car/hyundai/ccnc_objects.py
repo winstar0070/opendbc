@@ -32,6 +32,68 @@ class ObjectLanes:
   lines: tuple[LaneLine, ...]
 
 
+class CcncTrafficDirection:
+  """Estimate road-direction motion from track displacement plus ego travel.
+
+  Raw Sonata velocity research fields are not treated as calibrated speeds.
+  This filter changes display candidates only, never radar/control messages.
+  """
+  def __init__(self):
+    self.reset()
+
+  def reset(self):
+    self.timestamp = None
+    self.ego_speed = None
+    self.ego_travel = 0.
+    self.history = {}
+    self.accepted = set()
+
+  def update(self, radar, ego_speed, now):
+    if (radar is None or type(ego_speed) not in (int, float) or not 0 <= ego_speed <= 100 or
+        not math.isfinite(now) or not 0 <= now - radar.timestamp <= MAX_AGE):
+      self.reset()
+      return None
+    dt = None if self.timestamp is None else radar.timestamp - self.timestamp
+    if dt == 0:
+      return RadarObjects(radar.timestamp, tuple(o for o in radar.objects if o.track_id in self.accepted))
+    if dt is not None and not 0 < dt <= MAX_AGE:
+      self.reset()
+      dt = None
+    if dt is not None:
+      self.ego_travel += (self.ego_speed + ego_speed) * .5 * dt
+    self.timestamp, self.ego_speed = radar.timestamp, ego_speed
+    history, accepted = {}, set()
+    for obj in radar.objects:
+      samples = self.history.get(obj.track_id, [])
+      if samples:
+        prior = samples[-1]
+        gap = radar.timestamp - prior[0]
+        # Slots can be reused: discontinuous coordinates are a new observation.
+        if (gap <= 0 or gap > MAX_AGE or abs(obj.lateral - prior[3]) > 1.5 or
+            abs(obj.distance - prior[1]) > 120 * gap + 1.):
+          samples = []
+      samples = [s for s in samples if radar.timestamp - s[0] <= .6]
+      samples.append((radar.timestamp, obj.distance, self.ego_travel, obj.lateral))
+      history[obj.track_id] = samples
+      first = samples[0]
+      duration = radar.timestamp - first[0]
+      if duration < .3:
+        continue  # A new slot has no trustworthy direction yet.
+      road_speed = (obj.distance - first[1] + self.ego_travel - first[2]) / duration
+      # Use the recent interval too: a direction reversal must not remain
+      # visible solely because an older same-direction sample dominates.
+      recent = next(s for s in samples if radar.timestamp - s[0] <= .3)
+      recent_duration = radar.timestamp - recent[0]
+      recent_speed = ((obj.distance - recent[1] + self.ego_travel - recent[2]) / recent_duration
+                      if recent_duration >= .15 else road_speed)
+      # Half a metre/second tolerates distance quantization around a stopped
+      # target, while rejecting even low-speed opposing traffic.
+      if road_speed >= -.5 and recent_speed >= -.5:
+        accepted.add(obj.track_id)
+    self.history, self.accepted = history, accepted
+    return RadarObjects(radar.timestamp, tuple(o for o in radar.objects if o.track_id in accepted))
+
+
 def read_radar_objects(radar, timestamp: float) -> RadarObjects | None:
   if not math.isfinite(timestamp) or any(radar.errors.to_dict().values()):
     return None
