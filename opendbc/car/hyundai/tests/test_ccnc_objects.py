@@ -45,6 +45,21 @@ class TestCcncObjects(unittest.TestCase):
       self.assertEqual(len(set(packed)), 1)
       self.assertNotEqual(abs(self.display.selected[side].lateral), packed[-1])
 
+  def test_adjacent_jitter_is_stable_while_longitudinal_motion_continues(self):
+    for side, sign in (("LEFT", 1), ("RIGHT", -1)):
+      self.display.reset()
+      packed = []
+      distances = []
+      for i in range(81):
+        # Slow enough that the old 100ms coordinate EMA follows the wobble.
+        measured = 3.6 if i == 0 else 3.6 + (.25 if (i // 5) % 2 else -.25)
+        values = self.values((1, 50. - i * .3, sign * measured), t=1. + i * .05)
+        packed.append(self.packed_lateral(values, side))
+        distances.append(values[f'LEAD_{side}_DISTANCE'])
+      self.assertLessEqual(max(packed) - min(packed), .1 + 1e-9)
+      self.assertTrue(all(a > b for a, b in zip(distances, distances[1:], strict=False)))
+      self.assertLess(distances[-1], 27.)
+
   def test_lateral_hysteresis_follows_sustained_motion_without_changing_distance(self):
     self.values((1, 20., 3.6))
     previous_x = 20.
@@ -56,8 +71,13 @@ class TestCcncObjects(unittest.TestCase):
       previous_y += (-measured - previous_y) / 3.
       self.assertAlmostEqual(values['LEAD_LEFT_DISTANCE'], previous_x)
       self.assertAlmostEqual(self.display.selected['LEFT'].lateral, previous_y, places=6)
-      self.assertLessEqual(abs(self.packed_lateral(values) - abs(previous_y)), .075 + 1e-9)
-    self.assertGreater(self.packed_lateral(values), 4.4)
+      self.assertLessEqual(abs(self.packed_lateral(values) - self.display.filtered_lateral['LEFT']), .075 + 1e-9)
+      self.assertLessEqual(abs(self.packed_lateral(values) - abs(previous_y)), .45)
+    # A sustained displacement must eventually move the painted car, while
+    # allowing the deliberate deadband instead of demanding sensor jitter.
+    for i in range(21, 41):
+      values = self.values((1, 40., 4.6), t=1. + i * .05)
+    self.assertGreaterEqual(self.packed_lateral(values), 4.3)
 
   def test_lateral_hysteresis_clears_on_track_side_loss_and_time_reset(self):
     for reset_kind in ('track', 'side', 'missing', 'stale', 'regression', 'explicit'):

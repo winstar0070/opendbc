@@ -8,6 +8,7 @@ MAX_SOURCE_SKEW = 0.15
 # CAN lateral resolution is 10cm; retain the bin for an extra 2.5cm.
 LATERAL_STEP = 0.1
 LATERAL_HYSTERESIS = 0.025
+LATERAL_DEADBAND = 0.2
 # Same frame offset used by openpilot radard when matching model leads to radar.
 RADAR_TO_MODEL = 1.52
 LaneLine = tuple[tuple[float, float], ...]
@@ -138,6 +139,7 @@ class CcncObjectDisplay:
     self.timestamp = None
     self.selected: dict[str, RadarObject] = {}
     self.display_lateral: dict[str, float] = {}
+    self.filtered_lateral: dict[str, float] = {}
 
   def update(self, radar: RadarObjects | None, lanes: ObjectLanes | None, now: float, multiple_front: bool = False) -> dict[str, float]:
     if (radar is None or lanes is None or not math.isfinite(now) or
@@ -152,9 +154,11 @@ class CcncObjectDisplay:
     values = {}
     selected = {}
     display_lateral = {}
+    filtered_lateral = {}
     if not multiple_front:
       self.selected.pop("ALT", None)
       self.display_lateral.pop("ALT", None)
+      self.filtered_lateral.pop("ALT", None)
     previous_slots = {obj.track_id: side for side, obj in self.selected.items()}
     candidates_by_side: dict[str, list[RadarObject]] = {"LEFT": [], "RIGHT": [], "FRONT": []}
     for obj in radar.objects:
@@ -202,8 +206,21 @@ class CcncObjectDisplay:
         target = RadarObject(target.track_id, previous.distance + alpha * (target.distance - previous.distance),
                              previous.lateral + alpha * (target.lateral - previous.lateral))
       selected[side] = target
-      # Keep the measured EMA separate from the quantized display position.
+      # Stabilize the painted position independently of measured coordinates
+      # used for lane assignment. Never slow the longitudinal passing motion.
       lateral = abs(target.lateral)
+      prior_filtered = self.filtered_lateral.get(source_side) if previous is not None else None
+      if prior_filtered is not None and side in ('LEFT', 'RIGHT'):
+        error = lateral - prior_filtered
+        if dt == 0 or abs(error) <= LATERAL_DEADBAND:
+          lateral = prior_filtered
+        else:
+          # Gradually shorten the response for sustained lateral movement;
+          # cut-ins keep following the same track through a slot handoff.
+          motion = min(1., max(0., (abs(error) - LATERAL_DEADBAND) / .4))
+          tau = .35 - .27 * motion
+          lateral = prior_filtered + dt / (tau + dt) * error
+      filtered_lateral[side] = lateral
       prior_lateral = self.display_lateral.get(source_side) if previous is not None else None
       if prior_lateral is not None and abs(lateral - prior_lateral) <= LATERAL_STEP / 2 + LATERAL_HYSTERESIS:
         lateral = prior_lateral
@@ -216,4 +233,5 @@ class CcncObjectDisplay:
       values.update({prefix: 2, f"{prefix}_DISTANCE": target.distance, f"{prefix}_LATERAL": lateral})
     self.selected = selected
     self.display_lateral = display_lateral
+    self.filtered_lateral = filtered_lateral
     return values
