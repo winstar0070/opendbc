@@ -9,6 +9,9 @@ MAX_SOURCE_SKEW = 0.15
 LATERAL_STEP = 0.1
 LATERAL_HYSTERESIS = 0.025
 LATERAL_DEADBAND = 0.2
+# Existing adjacent tracks may bridge a brief loss of the outer lane line.
+# Only a fresh, observed inner boundary can anchor the remembered lane width.
+LANE_HOLD_SECONDS = 7.0
 # Same frame offset used by openpilot radard when matching model leads to radar.
 RADAR_TO_MODEL = 1.52
 LaneLine = tuple[tuple[float, float], ...]
@@ -140,6 +143,8 @@ class CcncObjectDisplay:
     self.selected: dict[str, RadarObject] = {}
     self.display_lateral: dict[str, float] = {}
     self.filtered_lateral: dict[str, float] = {}
+    self.lane_assignments: dict[int, tuple[str, float, float, float]] = {}
+    self.observations: dict[int, RadarObject] = {}
 
   def update(self, radar: RadarObjects | None, lanes: ObjectLanes | None, now: float, multiple_front: bool = False) -> dict[str, float]:
     if (radar is None or lanes is None or not math.isfinite(now) or
@@ -160,6 +165,9 @@ class CcncObjectDisplay:
       self.display_lateral.pop("ALT", None)
       self.filtered_lateral.pop("ALT", None)
     previous_slots = {obj.track_id: side for side, obj in self.selected.items()}
+    previous_slots.update({track: assignment[0] for track, assignment in self.lane_assignments.items()})
+    assignments = {}
+    dormant_tracks = set()
     candidates_by_side: dict[str, list[RadarObject]] = {"LEFT": [], "RIGHT": [], "FRONT": []}
     for obj in radar.objects:
       positions = [lane_y(line, obj.distance + RADAR_TO_MODEL) for line in lanes.lines]
@@ -174,16 +182,39 @@ class CcncObjectDisplay:
         continue
       for side, index in (("LEFT", 0), ("RIGHT", 2)):
         left, right = positions[index:index + 2]
+        outer, inner = (left, right) if side == "LEFT" else (right, left)
+        held = False
+        if outer is None:
+          assignment = self.lane_assignments.get(obj.track_id)
+          observed = self.observations.get(obj.track_id)
+          if (previous_side != side or assignment is None or assignment[0] != side or
+              not 0 <= lanes.timestamp - assignment[1] <= LANE_HOLD_SECONDS or observed is None or
+              abs(obj.lateral - observed.lateral) > .75 or abs(obj.distance - observed.distance) > 120 * dt + 1.):
+            continue
+          if inner is None:
+            # Keep identity only while fresh radar remains continuous and near
+            # its last confirmed lateral position. No pixels without an inner
+            # boundary; the lease is never renewed by these hidden observations.
+            if abs(obj.lateral - assignment[3]) <= .75:
+              assignments[obj.track_id] = assignment
+              dormant_tracks.add(obj.track_id)
+            continue
+          # Follow today's inner boundary, not yesterday's frozen curve. Never
+          # acquire a new object or infer a rear position from this fallback.
+          left, right = (inner - assignment[2], inner) if side == "LEFT" else (inner, inner + assignment[2])
+          held = True
         if left is None or right is None or not 2.4 <= right - left <= 4.8:
           continue
         retained = inner_valid and previous_side in (side, "FRONT", "ALT")
         # Share the actual inner boundary with FRONT, without two margin gaps.
-        if retained:
+        if retained or held:
           in_lane = left + 0.2 <= obj.lateral < right if side == "LEFT" else left < obj.lateral <= right - 0.2
         else:
           in_lane = left + 0.2 <= obj.lateral <= right - 0.2
         if in_lane:
           candidates_by_side[side].append(obj)
+          assignments[obj.track_id] = (self.lane_assignments[obj.track_id] if held else
+                                       (side, lanes.timestamp, right - left, obj.lateral))
     if multiple_front:
       candidates_by_side["ALT"] = candidates_by_side["FRONT"]
     used_tracks = set()
@@ -197,7 +228,7 @@ class CcncObjectDisplay:
       target = retained if retained is not None and retained.distance <= nearest.distance + 5.0 else nearest
       source_side = previous_slots.get(target.track_id)
       if source_side is not None and (source_side == side or source_side in ("FRONT", "ALT") or side in ("FRONT", "ALT")):
-        previous = self.selected[source_side]
+        previous = self.selected.get(source_side)
       else:
         previous = None
       used_tracks.add(target.track_id)
@@ -234,4 +265,7 @@ class CcncObjectDisplay:
     self.selected = selected
     self.display_lateral = display_lateral
     self.filtered_lateral = filtered_lateral
+    selected_ids = {obj.track_id for obj in selected.values()} | dormant_tracks
+    self.lane_assignments = {track: assignment for track, assignment in assignments.items() if track in selected_ids}
+    self.observations = {obj.track_id: obj for obj in radar.objects if obj.track_id in selected_ids}
     return values
