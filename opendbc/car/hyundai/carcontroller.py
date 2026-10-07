@@ -5,7 +5,7 @@ from opendbc.car.lateral import apply_driver_steer_torque_limits, common_fault_a
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.hyundai import hyundaicanfd, hyundaican
 from opendbc.car.hyundai.ccnc_model import CcncLaneDisplay, read_camera_lanes
-from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay
+from opendbc.car.hyundai.ccnc_objects import CcncObjectDisplay, MAX_AGE
 from opendbc.car.hyundai.ccnc_radar import CcncRadarTracks
 from opendbc.car.hyundai.hyundaicanfd import CanBus
 from opendbc.car.hyundai.values import HyundaiFlags, Buttons, CarControllerParams, CAR
@@ -253,7 +253,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
                                                   CS.out.rightBlinker, CS.msg_161, CS.msg_162, CS.msg_1b5, CS.is_metric, CS.out, CS.main_cruise_enabled,
                                                   self.lfa_icon, send_161=CS.ccnc_0x161_updated, send_162=CS.ccnc_0x162_updated,
                                                   lane_values=lane_values, object_values=object_values, camera_values=camera_values,
-                                                  completion_hold=self.ccnc_display.completion_until is not None and lane_values is not None))
+                                                  completion_hold=self.ccnc_display.completion_until is not None and lane_values is not None,
+                                                  camera_fresh=CS.ccnc_camera_time_nanos > 0 and
+                                                  0 <= now_nanos - CS.ccnc_camera_time_nanos <= MAX_AGE * 1e9))
     elif self.frame % 5 == 0 and (not lka_steering or lka_steering_long):
       can_sends.append(hyundaicanfd.create_lfahda_cluster(self.packer, self.CAN, CC.enabled, self.lfa_icon))
 

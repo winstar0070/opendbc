@@ -1,3 +1,4 @@
+import math
 import numpy as np
 from opendbc.car import CanBusBase
 from opendbc.car.common.conversions import Conversions as CV
@@ -128,10 +129,11 @@ def create_lfahda_cluster(packer, CAN, enabled, lfa_icon):
 
 def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_blinker, right_blinker, msg_161, msg_162, msg_1b5,
                 is_metric, out, main_cruise_enabled, lfa_icon, send_161=True, send_162=True, lane_values=None, object_values=None,
-                camera_values=None, completion_hold=False):
+                camera_values=None, completion_hold=False, camera_fresh=True):
   # Do not retain synthesized display fields in CarState's stock snapshots.
   # Each new frame must fall back to the actual camera data after expiry/loss.
   msg_161, msg_162 = msg_161.copy(), msg_162.copy()
+  native_front = msg_162['LEAD'] != 0
   if object_values is not None:
     for side in ("LEFT", "RIGHT"):
       # Keep native classifications and positions, including unknown nonzero
@@ -257,6 +259,21 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     )
 
     msg_162["LEAD_DISTANCE"] = msg_1b5["Longitudinal_Distance"]
+
+  # Only bridge a previously displayed adjacent track into an empty front
+  # slot. With openpilot longitudinal, retain the existing camera-based front
+  # avatar when its source is fresh and in display range. A camera distance
+  # alone does not activate a native graphic when stock longitudinal is used.
+  # The 200m range is a display policy, not a decoded camera sentinel.
+  camera_distance = msg_1b5['Longitudinal_Distance']
+  camera_front = camera_fresh and math.isfinite(camera_distance) and 0 < camera_distance < 200
+  if (object_values is not None and object_values.get('LEAD') == 2 and
+      main_cruise_enabled and not native_front and (not openpilot_longitudinal_control or not camera_front)):
+    distance = object_values.get('LEAD_DISTANCE', float('nan'))
+    lateral = object_values.get('LEAD_LATERAL', float('nan'))
+    if math.isfinite(distance) and 0 < distance < 200 and math.isfinite(lateral) and 0 <= lateral < 12.7:
+      msg_162.update({'LEAD': (4 if enabled else 3) if openpilot_longitudinal_control else 2,
+                      'LEAD_DISTANCE': distance, 'LEAD_LATERAL': lateral})
 
   messages = []
 

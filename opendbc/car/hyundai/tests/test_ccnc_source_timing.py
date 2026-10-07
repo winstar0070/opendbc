@@ -239,6 +239,26 @@ class TestCcncSourceTiming(unittest.TestCase):
       if key.startswith(('LEAD_LEFT', 'LEAD_RIGHT')):
         self.assertAlmostEqual(values[key], value)
 
+  def test_cutin_fallback_uses_camera_source_age(self):
+    for camera_time, expected in ((1_000_000_000, 4), (700_000_000, 4), (1_100_000_000, 4), (0, 4)):
+      with self.subTest(camera_time=camera_time):
+        self.setUp()
+        self.controller.CP.openpilotLongitudinalControl = True
+        self.cc.enabled = True
+        self.cs.main_cruise_enabled = True
+        self.cs.msg_162['LEAD'] = 0
+        lines = tuple(((0., y), (80., y)) for y in (-5.4, -1.8, 1.8, 5.4))
+        self.controller.ccnc_radar = RadarObjects(1.01, (RadarObject(1, 20., -3.6),))
+        self.controller.ccnc_object_lanes = ObjectLanes(1.01, lines)
+        self.display_messages(1, updated_162=True)
+        self.cs.ccnc_camera_time_nanos = camera_time
+        self.controller.ccnc_radar = RadarObjects(1.05, (RadarObject(1, 20., -.3),))
+        self.controller.ccnc_object_lanes = ObjectLanes(1.05, lines)
+        msg = self.display_messages(5, updated_162=True)[0]
+        result = decode('CCNC_0x162', 0x162, msg[1].hex())
+        self.assertEqual(result['LEAD'], expected)
+        self.assertAlmostEqual(result['LEAD_DISTANCE'], 22.6 if camera_time == 1_000_000_000 else 20.)
+
   def test_camera_animation_without_model_and_with_missing_outer_lane(self):
     self.cs.out.leftBlinker = True
     self.cc.latActive = True

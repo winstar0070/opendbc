@@ -30,7 +30,8 @@ class TestCcncObjects(unittest.TestCase):
     message = CANPacker("hyundai_canfd_generated").make_can_msg("CCNC_0x162", 0, values)
     parser = CANParser("hyundai_canfd_generated", [("CCNC_0x162", 0)], 0)
     parser.update([(1, [message])])
-    return parser.vl["CCNC_0x162"][f"LEAD_{side}_LATERAL"]
+    prefix = "LEAD" if side == "FRONT" else f"LEAD_{side}"
+    return parser.vl["CCNC_0x162"][f"{prefix}_LATERAL"]
 
   def test_small_lateral_jitter_does_not_toggle_packed_can(self):
     for side, sign in (("LEFT", 1), ("RIGHT", -1)):
@@ -79,6 +80,77 @@ class TestCcncObjects(unittest.TestCase):
           self.display.reset()
         values = self.values((track, 20., sign * 3.68), t=t)
         self.assertAlmostEqual(self.packed_lateral(values, side), 3.7)
+
+  def test_tracked_cutin_crosses_shared_boundary_without_gap_and_returns(self):
+    for side, sign in (("LEFT", 1), ("RIGHT", -1)):
+      with self.subTest(side=side):
+        self.display.reset()
+        self.values((1, 20., sign * 2.1), t=1.)
+        previous_x, previous_y = 20., -sign * 2.1
+        for i, y in enumerate((1.95, 1.81, 1.79, 1.6, 1.81, 1.95), 1):
+          values = self.values((1, 20. + i, sign * y), t=1. + i * .05)
+          slot = side if y > 1.8 else 'FRONT'
+          prefix = 'LEAD' if slot == 'FRONT' else 'LEAD_' + slot
+          self.assertEqual(values[prefix], 2)
+          self.assertEqual(list(self.display.selected), [slot])
+          previous_x += (20. + i - previous_x) / 3.
+          previous_y += (-sign * y - previous_y) / 3.
+          self.assertAlmostEqual(values[prefix + '_DISTANCE'], previous_x)
+          self.assertAlmostEqual(self.display.selected[slot].lateral, previous_y, places=6)
+          self.assertEqual(len(values), 3)
+          self.assertAlmostEqual(self.packed_lateral(values, slot), values[prefix + '_LATERAL'])
+
+  def test_front_requires_previous_selected_track_and_valid_inner_geometry(self):
+    self.assertEqual(self.values((9, 20., 0.)), {})
+    self.values((1, 20., 2.1), t=1.05)
+    self.assertEqual(self.values((9, 20., 0.), t=1.1), {})
+    self.values((1, 20., 2.1), t=1.15)
+    bad = model()
+    bad.laneLineProbs[1] = .1
+    self.assertEqual(self.values((1, 20., 1.7), t=1.2, geometry=bad), {})
+
+  def test_front_competition_retains_near_previous_and_has_no_duplicates(self):
+    self.values((1, 20., 2.1), (2, 22., -2.1))
+    self.values((1, 20., 1.7), (2, 22., -2.1), t=1.05)
+    self.values((1, 22., 1.6), (2, 20., -1.7), t=1.1)
+    self.assertEqual(self.display.selected['FRONT'].track_id, 1)
+    self.assertEqual(len(self.display.selected), 1)
+
+  def test_front_competition_switches_to_clearly_closer_tracked_cutin(self):
+    self.values((1, 20., 2.1), (2, 22., -2.1))
+    self.values((1, 20., 1.7), (2, 22., -2.1), t=1.05)
+    values = self.values((1, 30., 1.6), (2, 20., -1.7), t=1.1)
+    self.assertEqual(self.display.selected['FRONT'].track_id, 2)
+    self.assertEqual(len(values), 3)
+
+  def test_front_uses_inner_lines_without_extrapolating_and_never_uses_new_center(self):
+    self.values((1, 20., 2.1))
+    geometry = model()
+    geometry.laneLineProbs[0] = geometry.laneLineProbs[3] = 0.
+    values = self.values((1, 20., 0.), (9, 5., 0.), t=1.05, geometry=geometry)
+    self.assertEqual(self.display.selected['FRONT'].track_id, 1)
+    self.assertEqual(values['LEAD'], 2)
+    geometry.laneLines[1].x = geometry.laneLines[2].x = [0., 5., 10.]
+    self.assertEqual(self.values((1, 20., 0.), t=1.1, geometry=geometry), {})
+
+  def test_new_side_object_does_not_gain_tracked_boundary_margin(self):
+    self.assertEqual(self.values((1, 20., 1.9), (2, 20., -1.9)), {})
+
+  def test_cutin_permission_is_lost_on_loss_fault_or_quarter_second_gap(self):
+    for kind in ('loss', 'fault', 'gap', 'regression'):
+      with self.subTest(kind=kind):
+        self.display.reset()
+        self.values((1, 20., 2.1), t=2.)
+        t = 2.05
+        if kind == 'loss':
+          self.values(t=2.025)
+        elif kind == 'fault':
+          self.display.update(None, read_object_lanes(model(), 2.025), 2.025)
+        elif kind == 'gap':
+          t = 2.25
+        else:
+          t = 1.9
+        self.assertEqual(self.values((1, 20., 1.7), t=t), {})
 
   def test_both_sides_use_measured_positions_and_unclassified_boxes(self):
     values = self.values((1, 25., 3.6), (2, 40., -3.5), (3, 15., 0.))

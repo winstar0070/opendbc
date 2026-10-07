@@ -83,34 +83,61 @@ class CcncObjectDisplay:
         abs(radar.timestamp - lanes.timestamp) > MAX_SOURCE_SKEW):
       self.reset()
       return {}
-    if self.timestamp is not None and not 0 <= radar.timestamp - self.timestamp <= MAX_AGE:
+    if self.timestamp is not None and not 0 <= radar.timestamp - self.timestamp < MAX_AGE:
       self.reset()
     dt = 0.0 if self.timestamp is None else radar.timestamp - self.timestamp
     self.timestamp = radar.timestamp
     values = {}
     selected = {}
     display_lateral = {}
-    for side, index in (("LEFT", 0), ("RIGHT", 2)):
-      candidates = []
-      for obj in radar.objects:
-        left, right = (lane_y(line, obj.distance + RADAR_TO_MODEL) for line in lanes.lines[index:index + 2])
-        if (left is not None and right is not None and 2.4 <= right - left <= 4.8 and
-            left + 0.2 <= obj.lateral <= right - 0.2):
-          candidates.append(obj)
+    previous_slots = {obj.track_id: side for side, obj in self.selected.items()}
+    candidates_by_side: dict[str, list[RadarObject]] = {"LEFT": [], "RIGHT": [], "FRONT": []}
+    for obj in radar.objects:
+      positions = [lane_y(line, obj.distance + RADAR_TO_MODEL) for line in lanes.lines]
+      inner_left, inner_right = positions[1:3]
+      inner_valid = (inner_left is not None and inner_right is not None and
+                     2.4 <= inner_right - inner_left <= 4.8)
+      previous_side = previous_slots.get(obj.track_id)
+      if inner_valid and inner_left <= obj.lateral <= inner_right:
+        # Only a previously selected adjacent/front track may enter this slot.
+        if previous_side is not None:
+          candidates_by_side["FRONT"].append(obj)
+        continue
+      for side, index in (("LEFT", 0), ("RIGHT", 2)):
+        left, right = positions[index:index + 2]
+        if left is None or right is None or not 2.4 <= right - left <= 4.8:
+          continue
+        retained = inner_valid and previous_side in (side, "FRONT")
+        # Share the actual inner boundary with FRONT, without two margin gaps.
+        if retained:
+          in_lane = left + 0.2 <= obj.lateral < right if side == "LEFT" else left < obj.lateral <= right - 0.2
+        else:
+          in_lane = left + 0.2 <= obj.lateral <= right - 0.2
+        if in_lane:
+          candidates_by_side[side].append(obj)
+    used_tracks = set()
+    for side in ("LEFT", "RIGHT", "FRONT"):
+      candidates = [obj for obj in candidates_by_side[side] if obj.track_id not in used_tracks]
       if not candidates:
         continue
       nearest = min(candidates, key=lambda p: (p.distance, p.track_id))
       previous = self.selected.get(side)
       retained = next((p for p in candidates if previous is not None and p.track_id == previous.track_id), None)
       target = retained if retained is not None and retained.distance <= nearest.distance + 5.0 else nearest
-      if previous is not None and target.track_id == previous.track_id:
+      source_side = previous_slots.get(target.track_id)
+      if source_side is not None and (source_side == side or "FRONT" in (source_side, side)):
+        previous = self.selected[source_side]
+      else:
+        previous = None
+      used_tracks.add(target.track_id)
+      if previous is not None:
         alpha = dt / (0.1 + dt)
         target = RadarObject(target.track_id, previous.distance + alpha * (target.distance - previous.distance),
                              previous.lateral + alpha * (target.lateral - previous.lateral))
       selected[side] = target
       # Keep the measured EMA separate from the quantized display position.
       lateral = abs(target.lateral)
-      prior_lateral = self.display_lateral.get(side) if previous is not None and target.track_id == previous.track_id else None
+      prior_lateral = self.display_lateral.get(source_side) if previous is not None else None
       if prior_lateral is not None and abs(lateral - prior_lateral) <= LATERAL_STEP / 2 + LATERAL_HYSTERESIS:
         lateral = prior_lateral
       else:
@@ -118,7 +145,8 @@ class CcncObjectDisplay:
       display_lateral[side] = lateral
       # Radar tracks do not supply an object class. Use the existing white box
       # enum rather than asserting that a reflector is a car/truck/person.
-      values.update({f"LEAD_{side}": 2, f"LEAD_{side}_DISTANCE": target.distance, f"LEAD_{side}_LATERAL": lateral})
+      prefix = "LEAD" if side == "FRONT" else f"LEAD_{side}"
+      values.update({prefix: 2, f"{prefix}_DISTANCE": target.distance, f"{prefix}_LATERAL": lateral})
     self.selected = selected
     self.display_lateral = display_lateral
     return values
