@@ -22,7 +22,7 @@ class TestCcncCutInPacking(unittest.TestCase):
     hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False, leadDistanceBars=3, leadVisible=False)
     out = SimpleNamespace(vEgo=20., vCruiseCluster=80., leftBlindspot=False, rightBlindspot=False)
     messages = create_ccnc(packer, SimpleNamespace(ECAN=0), longitudinal, True, hud, False, False,
-                           stock_161, stock_162, {'Longitudinal_Distance': camera}, True, out, main, 2,
+                           stock_161, stock_162, {} if camera is None else {'Longitudinal_Distance': camera}, True, out, main, 2,
                            object_values=front, camera_fresh=camera_fresh)
     self.assertEqual(originals, (stock_161, stock_162))
     for addr, data, _ in messages:
@@ -78,6 +78,10 @@ class TestCcncCutInPacking(unittest.TestCase):
   def test_stale_camera_cannot_block_fresh_cutin(self):
     front = {'LEAD': 2, 'LEAD_DISTANCE': 20., 'LEAD_LATERAL': .3}
     self.assertEqual(self.send(front, camera=30., camera_fresh=False)['LEAD_DISTANCE'], 20.)
+
+  def test_stock_longitudinal_accepts_missing_camera_distance(self):
+    front = {'LEAD': 2, 'LEAD_DISTANCE': 20., 'LEAD_LATERAL': .3}
+    self.assertEqual(self.send(front, camera=None, longitudinal=False)['LEAD_DISTANCE'], 20.)
 
 
 if __name__ == '__main__':

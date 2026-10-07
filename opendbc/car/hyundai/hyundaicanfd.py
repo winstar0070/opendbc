@@ -265,7 +265,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # avatar when its source is fresh and in display range. A camera distance
   # alone does not activate a native graphic when stock longitudinal is used.
   # The 200m range is a display policy, not a decoded camera sentinel.
-  camera_distance = msg_1b5['Longitudinal_Distance']
+  camera_distance = msg_1b5.get('Longitudinal_Distance', float('nan'))
   camera_front = camera_fresh and math.isfinite(camera_distance) and 0 < camera_distance < 200
   if (object_values is not None and object_values.get('LEAD') == 2 and
       main_cruise_enabled and not native_front and (not openpilot_longitudinal_control or not camera_front)):
