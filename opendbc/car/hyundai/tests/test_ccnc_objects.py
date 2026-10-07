@@ -129,6 +129,29 @@ class TestCcncObjects(unittest.TestCase):
     bad.laneLineProbs[1] = .1
     self.assertEqual(self.values((1, 20., 1.7), t=1.2, geometry=bad), {})
 
+  def test_cutin_keeps_painted_lateral_filter_across_slot_handoff(self):
+    for sign, side in ((1, 'LEFT'), (-1, 'RIGHT')):
+      self.display.reset()
+      values = self.values((1, 20., sign * 2.1), t=1.)
+      painted = values[f'LEAD_{side}_LATERAL']
+      # Both lane membership changes and the raw measurement changes; the
+      # center slot must inherit the displayed position, not jump to its EMA.
+      values = self.values((1, 19.5, sign * 1.0), t=1.05)
+      self.assertEqual(list(self.display.selected), ['FRONT'])
+      self.assertLess(abs(values['LEAD_LATERAL'] - painted), .1 + 1e-9)
+      self.assertGreater(abs(values['LEAD_LATERAL'] - abs(self.display.selected['FRONT'].lateral)), .2)
+      for i in range(1, 41):
+        values = self.values((1, 19.5, sign * 1.0), t=1.05 + i * .05)
+      self.assertLessEqual(values['LEAD_LATERAL'], 1.3)
+
+  def test_reused_slot_does_not_blend_unrelated_vehicle_positions(self):
+    for x, y in ((45., 3.6), (20., 5.2)):
+      self.display.reset()
+      self.values((1, 20., 3.6), t=1.)
+      values = self.values((1, x, y), t=1.05)
+      self.assertAlmostEqual(values['LEAD_LEFT_DISTANCE'], x)
+      self.assertAlmostEqual(values['LEAD_LEFT_LATERAL'], y)
+
   def test_front_competition_retains_near_previous_and_has_no_duplicates(self):
     self.values((1, 20., 2.1), (2, 22., -2.1))
     self.values((1, 20., 1.7), (2, 22., -2.1), t=1.05)
@@ -197,10 +220,11 @@ class TestCcncObjects(unittest.TestCase):
     self.pair_values((1, 22., .5), (2, 20., -.5), t=1.05)
     self.assertEqual(self.display.selected['FRONT'].track_id, 1)
     before = dict(self.display.selected)
-    self.pair_values((1, 30., .5), (2, 20., -.5), t=1.1)
+    # Six metres preserves a continuous track while still forcing a switch.
+    self.pair_values((1, 28., .5), (2, 20., -.5), t=1.1)
     self.assertEqual([self.display.selected[k].track_id for k in ('FRONT', 'ALT')], [2, 1])
     self.assertAlmostEqual(self.display.selected['FRONT'].distance, before['ALT'].distance + (20. - before['ALT'].distance) / 3.)
-    self.assertAlmostEqual(self.display.selected['ALT'].distance, before['FRONT'].distance + (30. - before['FRONT'].distance) / 3.)
+    self.assertAlmostEqual(self.display.selected['ALT'].distance, before['FRONT'].distance + (28. - before['FRONT'].distance) / 3.)
 
   def test_front_pair_alt_transfers_to_side_and_mode_off_removes_alt(self):
     self.pair_values((1, 10., 0.), (2, 20., 1.7))

@@ -231,6 +231,13 @@ class CcncObjectDisplay:
         previous = self.selected.get(source_side)
       else:
         previous = None
+      # A radar slot number can be reused. Smooth only spatially continuous
+      # observations; otherwise the old car would visibly slide to the new one.
+      observed = self.observations.get(target.track_id)
+      if previous is not None and (observed is None or
+          abs(target.lateral - observed.lateral) > 1.5 or
+          abs(target.distance - observed.distance) > 120 * dt + 1.):
+        previous = None
       used_tracks.add(target.track_id)
       if previous is not None:
         alpha = dt / (0.1 + dt)
@@ -241,13 +248,13 @@ class CcncObjectDisplay:
       # used for lane assignment. Never slow the longitudinal passing motion.
       lateral = abs(target.lateral)
       prior_filtered = self.filtered_lateral.get(source_side) if previous is not None else None
-      if prior_filtered is not None and side in ('LEFT', 'RIGHT'):
+      if prior_filtered is not None:
         error = lateral - prior_filtered
         if dt == 0 or abs(error) <= LATERAL_DEADBAND:
           lateral = prior_filtered
         else:
-          # Gradually shorten the response for sustained lateral movement;
-          # cut-ins keep following the same track through a slot handoff.
+          # Use the same response in all slots so a cut-in does not suddenly
+          # lose its lateral filter when crossing into the center lane.
           motion = min(1., max(0., (abs(error) - LATERAL_DEADBAND) / .4))
           tau = .35 - .27 * motion
           lateral = prior_filtered + dt / (tau + dt) * error
