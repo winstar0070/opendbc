@@ -14,10 +14,11 @@ def decode(name, msg):
 
 
 class TestCcncCutInPacking(unittest.TestCase):
-  def send(self, front=None, native=0, camera=0., longitudinal=True, main=True, camera_fresh=True):
+  def send(self, front=None, native=0, camera=0., longitudinal=True, main=True, camera_fresh=True, native_alt=0):
     packer = CANPacker('hyundai_canfd_generated')
     stock_161 = decode('CCNC_0x161', packer.make_can_msg('CCNC_0x161', 0, {}))
-    stock_162 = decode('CCNC_0x162', packer.make_can_msg('CCNC_0x162', 0, {'LEAD': native, 'LEAD_DISTANCE': 42.}))
+    stock_162 = decode('CCNC_0x162', packer.make_can_msg('CCNC_0x162', 0, {'LEAD': native, 'LEAD_DISTANCE': 42.,
+                                                                     'LEAD_ALT': native_alt, 'LEAD_ALT_DISTANCE': 55.}))
     originals = copy.deepcopy((stock_161, stock_162))
     hud = SimpleNamespace(leftLaneDepart=False, rightLaneDepart=False, leadDistanceBars=3, leadVisible=False)
     out = SimpleNamespace(vEgo=20., vCruiseCluster=80., leftBlindspot=False, rightBlindspot=False)

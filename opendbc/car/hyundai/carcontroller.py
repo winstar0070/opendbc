@@ -228,7 +228,9 @@ class CarController(CarControllerBase, EsccCarController, LeadDataCarController,
         object_values = None
         camera_values = None
         if CS.ccnc_0x162_updated:
-          object_values = self.ccnc_object_display.update(self.ccnc_radar, self.ccnc_object_lanes, now_nanos * 1e-9)
+          object_values = self.ccnc_object_display.update(
+            self.ccnc_radar, self.ccnc_object_lanes, now_nanos * 1e-9,
+            multiple_front=bool(CS.main_cruise_enabled and CS.msg_162['LEAD'] == 0 and CS.msg_162['LEAD_ALT'] == 0))
         if CS.ccnc_0x161_updated:
           model = self.ccnc_model
           # CC's requested blinkers come from model metadata too; require the

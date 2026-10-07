@@ -259,6 +259,25 @@ class TestCcncSourceTiming(unittest.TestCase):
         self.assertEqual(result['LEAD'], expected)
         self.assertAlmostEqual(result['LEAD_DISTANCE'], 22.6 if camera_time == 1_000_000_000 else 20.)
 
+  def test_front_pair_and_both_adjacent_slots_reach_can_and_clear_on_loss(self):
+    self.cs.main_cruise_enabled = True
+    self.cs.msg_162.update({'LEAD': 0, 'LEAD_ALT': 0, 'LEAD_LEFT': 0, 'LEAD_RIGHT': 0})
+    original = self.cs.msg_162.copy()
+    lines = tuple(((0., y), (80., y)) for y in (-5.4, -1.8, 1.8, 5.4))
+    self.controller.ccnc_radar = RadarObjects(1.05, (RadarObject(1, 10., 0.), RadarObject(2, 25., .2),
+                                                   RadarObject(3, 40., -3.6), RadarObject(4, 45., 3.6)))
+    self.controller.ccnc_object_lanes = ObjectLanes(1.05, lines)
+    msg = self.display_messages(5, updated_162=True)[0]
+    result = decode('CCNC_0x162', 0x162, msg[1].hex())
+    for prefix, distance in (('LEAD', 10.), ('LEAD_ALT', 25.), ('LEAD_LEFT', 40.), ('LEAD_RIGHT', 45.)):
+      self.assertEqual(result[prefix], 2)
+      self.assertAlmostEqual(result[prefix + '_DISTANCE'], distance)
+    self.assertEqual(self.cs.msg_162, original)
+    self.controller.ccnc_radar = None
+    msg = self.display_messages(10, updated_162=True)[0]
+    result = decode('CCNC_0x162', 0x162, msg[1].hex())
+    self.assertEqual(tuple(result[k] for k in ('LEAD', 'LEAD_ALT', 'LEAD_LEFT', 'LEAD_RIGHT')), (0, 0, 0, 0))
+
   def test_camera_animation_without_model_and_with_missing_outer_lane(self):
     self.cs.out.leftBlinker = True
     self.cc.latActive = True

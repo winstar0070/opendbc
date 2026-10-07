@@ -77,7 +77,7 @@ class CcncObjectDisplay:
     self.selected: dict[str, RadarObject] = {}
     self.display_lateral: dict[str, float] = {}
 
-  def update(self, radar: RadarObjects | None, lanes: ObjectLanes | None, now: float) -> dict[str, float]:
+  def update(self, radar: RadarObjects | None, lanes: ObjectLanes | None, now: float, multiple_front: bool = False) -> dict[str, float]:
     if (radar is None or lanes is None or not math.isfinite(now) or
         not 0 <= now - radar.timestamp <= MAX_AGE or not 0 <= now - lanes.timestamp <= MAX_AGE or
         abs(radar.timestamp - lanes.timestamp) > MAX_SOURCE_SKEW):
@@ -90,6 +90,9 @@ class CcncObjectDisplay:
     values = {}
     selected = {}
     display_lateral = {}
+    if not multiple_front:
+      self.selected.pop("ALT", None)
+      self.display_lateral.pop("ALT", None)
     previous_slots = {obj.track_id: side for side, obj in self.selected.items()}
     candidates_by_side: dict[str, list[RadarObject]] = {"LEFT": [], "RIGHT": [], "FRONT": []}
     for obj in radar.objects:
@@ -99,15 +102,15 @@ class CcncObjectDisplay:
                      2.4 <= inner_right - inner_left <= 4.8)
       previous_side = previous_slots.get(obj.track_id)
       if inner_valid and inner_left <= obj.lateral <= inner_right:
-        # Only a previously selected adjacent/front track may enter this slot.
-        if previous_side is not None:
+        # New center candidates are opt-in; default mode keeps tracked cut-ins only.
+        if multiple_front or previous_side is not None:
           candidates_by_side["FRONT"].append(obj)
         continue
       for side, index in (("LEFT", 0), ("RIGHT", 2)):
         left, right = positions[index:index + 2]
         if left is None or right is None or not 2.4 <= right - left <= 4.8:
           continue
-        retained = inner_valid and previous_side in (side, "FRONT")
+        retained = inner_valid and previous_side in (side, "FRONT", "ALT")
         # Share the actual inner boundary with FRONT, without two margin gaps.
         if retained:
           in_lane = left + 0.2 <= obj.lateral < right if side == "LEFT" else left < obj.lateral <= right - 0.2
@@ -115,8 +118,10 @@ class CcncObjectDisplay:
           in_lane = left + 0.2 <= obj.lateral <= right - 0.2
         if in_lane:
           candidates_by_side[side].append(obj)
+    if multiple_front:
+      candidates_by_side["ALT"] = candidates_by_side["FRONT"]
     used_tracks = set()
-    for side in ("LEFT", "RIGHT", "FRONT"):
+    for side in candidates_by_side:
       candidates = [obj for obj in candidates_by_side[side] if obj.track_id not in used_tracks]
       if not candidates:
         continue
@@ -125,7 +130,7 @@ class CcncObjectDisplay:
       retained = next((p for p in candidates if previous is not None and p.track_id == previous.track_id), None)
       target = retained if retained is not None and retained.distance <= nearest.distance + 5.0 else nearest
       source_side = previous_slots.get(target.track_id)
-      if source_side is not None and (source_side == side or "FRONT" in (source_side, side)):
+      if source_side is not None and (source_side == side or source_side in ("FRONT", "ALT") or side in ("FRONT", "ALT")):
         previous = self.selected[source_side]
       else:
         previous = None

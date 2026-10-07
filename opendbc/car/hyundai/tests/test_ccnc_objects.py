@@ -152,6 +152,59 @@ class TestCcncObjects(unittest.TestCase):
           t = 1.9
         self.assertEqual(self.values((1, 20., 1.7), t=t), {})
 
+  def pair_values(self, *points, t=1., multiple_front=True, geometry=None):
+    return self.display.update(read_radar_objects(radar(*points), t), read_object_lanes(geometry or model(), t),
+                               t, multiple_front=multiple_front)
+
+  def test_front_pair_opt_in_selects_two_nearest_measured_center_tracks(self):
+    points = ((1, 30., .5), (2, 20., -.5), (3, 40., 0.))
+    self.assertEqual(self.values(*points), {})
+    values = self.pair_values(*points)
+    self.assertEqual([self.display.selected[k].track_id for k in ('FRONT', 'ALT')], [2, 1])
+    self.assertEqual(values['LEAD'], 2)
+    self.assertEqual(values['LEAD_ALT'], 2)
+    self.assertEqual(values['LEAD_DISTANCE'], 20.)
+    self.assertEqual(values['LEAD_ALT_DISTANCE'], 30.)
+    self.assertAlmostEqual(self.packed_lateral(values, 'ALT'), .5)
+    packed = CANPacker('hyundai_canfd_generated').make_can_msg('CCNC_0x162', 0, values)
+    parser = CANParser('hyundai_canfd_generated', [('CCNC_0x162', 0)], 0)
+    parser.update([(1, [packed])])
+    self.assertEqual(parser.vl['CCNC_0x162']['LEAD_ALT'], 2)
+    self.assertEqual(parser.vl['CCNC_0x162']['LEAD_ALT_DISTANCE'], 30.)
+
+  def test_front_pair_retention_switch_and_ema_transfer_do_not_duplicate(self):
+    self.pair_values((1, 20., .5), (2, 22., -.5))
+    self.pair_values((1, 22., .5), (2, 20., -.5), t=1.05)
+    self.assertEqual(self.display.selected['FRONT'].track_id, 1)
+    before = dict(self.display.selected)
+    self.pair_values((1, 30., .5), (2, 20., -.5), t=1.1)
+    self.assertEqual([self.display.selected[k].track_id for k in ('FRONT', 'ALT')], [2, 1])
+    self.assertAlmostEqual(self.display.selected['FRONT'].distance, before['ALT'].distance + (20. - before['ALT'].distance) / 3.)
+    self.assertAlmostEqual(self.display.selected['ALT'].distance, before['FRONT'].distance + (30. - before['FRONT'].distance) / 3.)
+
+  def test_front_pair_alt_transfers_to_side_and_mode_off_removes_alt(self):
+    self.pair_values((1, 10., 0.), (2, 20., 1.7))
+    values = self.pair_values((1, 10., 0.), (2, 20., 1.9), t=1.05)
+    self.assertEqual(self.display.selected['LEFT'].track_id, 2)
+    self.assertNotIn('LEAD_ALT', values)
+    self.pair_values((1, 10., 0.), (2, 20., 1.7), t=1.1)
+    self.assertEqual(self.display.selected['ALT'].track_id, 2)
+    values = self.pair_values((1, 10., 0.), (2, 20., 1.7), t=1.15, multiple_front=False)
+    self.assertNotIn('LEAD_ALT', values)
+    self.assertNotIn('ALT', self.display.selected)
+
+  def test_front_pair_loss_fault_invalid_geometry_and_one_candidate(self):
+    values = self.pair_values((1, 20., 0.))
+    self.assertIn('LEAD', values)
+    self.assertNotIn('LEAD_ALT', values)
+    self.assertEqual(self.pair_values(t=1.05), {})
+    bad = model()
+    bad.laneLineProbs[1] = .1
+    self.assertEqual(self.pair_values((1, 20., 0.), t=1.1, geometry=bad), {})
+    self.pair_values((1, 20., 0.), (2, 30., .5), t=1.15)
+    self.assertEqual(self.display.update(None, read_object_lanes(model(), 1.2), 1.2, multiple_front=True), {})
+    self.assertEqual(self.values((1, 20., 0.), t=1.25), {})
+
   def test_both_sides_use_measured_positions_and_unclassified_boxes(self):
     values = self.values((1, 25., 3.6), (2, 40., -3.5), (3, 15., 0.))
     self.assertEqual({k: round(v, 3) for k, v in values.items()}, {'LEAD_LEFT': 2, 'LEAD_LEFT_DISTANCE': 25., 'LEAD_LEFT_LATERAL': 3.6,

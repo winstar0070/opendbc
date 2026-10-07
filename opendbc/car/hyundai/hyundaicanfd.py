@@ -134,6 +134,7 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
   # Each new frame must fall back to the actual camera data after expiry/loss.
   msg_161, msg_162 = msg_161.copy(), msg_162.copy()
   native_front = msg_162['LEAD'] != 0
+  native_alt = msg_162['LEAD_ALT'] != 0
   if object_values is not None:
     for side in ("LEFT", "RIGHT"):
       # Keep native classifications and positions, including unknown nonzero
@@ -274,6 +275,19 @@ def create_ccnc(packer, CAN, openpilot_longitudinal_control, enabled, hud, left_
     if math.isfinite(distance) and 0 < distance < 200 and math.isfinite(lateral) and 0 <= lateral < 12.7:
       msg_162.update({'LEAD': (4 if enabled else 3) if openpilot_longitudinal_control else 2,
                       'LEAD_DISTANCE': distance, 'LEAD_LATERAL': lateral})
+
+  # Personal-branch trial based on the historical ccNC six-slot sender:
+  # ALT is a second center object and enum 2 is a box (3/4 are cones).
+  # Populate a radar pair only when both original front graphics are empty.
+  # For a pair, both positions come from radar, avoiding a mixed-source pair.
+  if (object_values is not None and object_values.get('LEAD') == 2 and object_values.get('LEAD_ALT') == 2 and
+      main_cruise_enabled and not native_front and not native_alt):
+    positions = [(object_values.get(prefix + '_DISTANCE', float('nan')),
+                  object_values.get(prefix + '_LATERAL', float('nan'))) for prefix in ('LEAD', 'LEAD_ALT')]
+    if all(math.isfinite(d) and 0 < d < 200 and math.isfinite(y) and 0 <= y < 12.7 for d, y in positions):
+      msg_162.update({'LEAD': (4 if enabled else 3) if openpilot_longitudinal_control else 2,
+                      'LEAD_DISTANCE': positions[0][0], 'LEAD_LATERAL': positions[0][1],
+                      'LEAD_ALT': 2, 'LEAD_ALT_DISTANCE': positions[1][0], 'LEAD_ALT_LATERAL': positions[1][1]})
 
   messages = []
 
