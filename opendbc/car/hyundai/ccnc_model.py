@@ -41,8 +41,10 @@ def read_camera_lanes(camera, timestamp_ns, now_ns):
       not 2.4 <= right - left <= 4.8):
     return None
   position = max(0, min(30, round(-30 * left / (right - left))))
+  # Position animation must retain the live stock HUD curvature. A fixed
+  # neutral value here flattens the lane display while this fallback is active.
   return {'LANELINE_LEFT_POSITION': position, 'LANELINE_RIGHT_POSITION': 30 - position,
-          'LANELINE_LEFT': 6, 'LANELINE_RIGHT': 6, 'LANELINE_CURVATURE': 15,
+          'LANELINE_LEFT': 6, 'LANELINE_RIGHT': 6,
           'LANE_LEFT': 0, 'LANE_RIGHT': 0, 'LANE_HIGHLIGHT': 0, 'LANE_HIGHLIGHT_DISTANCE': 0.0}
 
 

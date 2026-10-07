@@ -290,6 +290,18 @@ class TestCcncSourceTiming(unittest.TestCase):
       self.assertEqual((values['LCA_LEFT_ARROW'], values['LCA_RIGHT_ARROW']), (2, 0))
       self.assertEqual(values['LANELINE_LEFT'], 6)
 
+  def test_camera_animation_preserves_changing_stock_curvature(self):
+    self.cs.out.leftBlinker = True
+    self.cc.latActive = True
+    for curvature in (1, 7, 15, 23, 30):
+      with self.subTest(curvature=curvature):
+        self.cs.msg_161['LANELINE_CURVATURE'] = curvature
+        msg = self.display_messages(0, updated_161=True)[0]
+        values = decode('CCNC_0x161', 0x161, msg[1].hex())
+        self.assertEqual(values['LANELINE_CURVATURE'], curvature)
+        self.assertEqual(values['LCA_LEFT_ARROW'], 2)
+        self.assertEqual(values['LANELINE_LEFT_POSITION'], 15)
+
   def test_camera_fallback_follows_motion_and_clears_with_blinker(self):
     for direction in (1, 2):
       self.cs.out.leftBlinker, self.cs.out.rightBlinker = direction == 1, direction == 2
