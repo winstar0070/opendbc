@@ -1976,14 +1976,15 @@
     ],
     "package": "All"
   },
-  "Hyundai Sonata Hybrid (without HDA II) 2024-25": {
+  "Hyundai Sonata Hybrid (without HDA II) 2024-26": {
     "platform": "HYUNDAI_SONATA_HEV_2024",
     "make": "Hyundai",
     "brand": "hyundai",
     "model": "Sonata Hybrid (without HDA II)",
     "year": [
       "2024",
-      "2025"
+      "2025",
+      "2026"
     ],
     "package": "Smart Cruise Control (SCC)"
   },
@@ -2274,13 +2275,14 @@
     ],
     "package": "Smart Cruise Control (SCC)"
   },
-  "Kia K5 (without HDA II) 2025": {
+  "Kia K5 (without HDA II) 2025-26": {
     "platform": "KIA_K5_2025",
     "make": "Kia",
     "brand": "hyundai",
     "model": "K5 (without HDA II)",
     "year": [
-      "2025"
+      "2025",
+      "2026"
     ],
     "package": "Smart Cruise Control (SCC)"
   },
